@@ -11,8 +11,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "navigate_to_point") {
     (async () => {
       try {
-        const targetId = await handleNavigation(request.query, request.elements);
-        sendResponse({ success: true, targetId });
+        const result = await handleNavigation(request.query, request.elements);
+        if (result.targetId) {
+          sendResponse({ success: true, targetId: result.targetId });
+        } else if (result.ambiguous) {
+          sendResponse({ success: false, reason: "ambiguous" });
+        } else {
+          sendResponse({ success: false });
+        }
       } catch (err) {
         console.error(err);
         sendResponse({ success: false });
@@ -47,6 +53,8 @@ async function handleNavigation(userQuery, elements) {
   elements.forEach(el => { criteria[el.id] = `Ruolo: ${el.r}, Testo: "${el.t}"`; });
 
   let decision = null;
+  let quality = null;
+  const MIN_MATCH_QUALITY = 2;
   if (TYPESAFE_API_KEY === "IL_TUO_TYPESAFE_API_KEY") {
     console.warn("Chiave TypeSafe non configurata in background.js. Salto l'API e uso il fallback locale.");
   } else {
@@ -66,6 +74,16 @@ async function handleNavigation(userQuery, elements) {
               type: "choice",
               instructions: "Quale ID di elemento corrisponde meglio alla destinazione cercata dall'utente?",
               criteria: criteria
+            },
+            match_quality: {
+              type: "score",
+              instructions: "Valuta quanto la destinazione cercata dall'utente corrisponde in modo chiaro e univoco al miglior elemento disponibile nella lista.",
+              criteria: [
+                "nessuna corrispondenza plausibile",
+                "corrispondenza debole o ambigua",
+                "corrispondenza ragionevole",
+                "corrispondenza chiara e univoca"
+              ]
             }
           }
         })
@@ -73,17 +91,22 @@ async function handleNavigation(userQuery, elements) {
       if (!response.ok) throw new Error("TypeSafe Jev ha risposto HTTP " + response.status);
       const data = await response.json();
       decision = data.answers?.target_element;
+      quality = typeof data.answers?.match_quality?.score === "number" ? data.answers.match_quality.score : null;
     } catch (error) {
       console.error("Errore TypeSafe Jev:", error);
     }
   }
 
   if (decision && decision.choice && elements.some(el => el.id === decision.choice)) {
+    if (quality !== null && quality < MIN_MATCH_QUALITY) {
+      console.warn("Corrispondenza ambigua (qualità " + quality + "). Navigazione bloccata.");
+      return { targetId: null, ambiguous: true };
+    }
     console.info("Elemento scelto da TypeSafe Jev:", decision.choice);
-    return decision.choice;
+    return { targetId: decision.choice, ambiguous: false };
   }
 
   const fallback = elements.find(el => el.t.toLowerCase().includes(refinedIntent.toLowerCase()));
   console.info(fallback ? "Fallback locale selezionato:" : "Nessun risultato locale per:", fallback ? fallback.id : refinedIntent);
-  return fallback ? fallback.id : null;
+  return { targetId: fallback ? fallback.id : null, ambiguous: false };
 }

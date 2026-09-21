@@ -46,8 +46,10 @@ function createAccessibleInput() {
           } else {
             status.textContent = "Elemento non raggiungibile.";
           }
-        } else {
-          status.textContent = "Destinazione non trovata.";
+        } else if (response && !response.success) {
+          status.textContent = response.reason === "ambiguous"
+            ? "Corrispondenza ambigua: prova una descrizione più precisa."
+            : "Destinazione non trovata.";
         }
       });
     }

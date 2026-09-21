@@ -10,7 +10,7 @@ Chrome MV3 extension ("Accessible AI Browser Navigator"): raw JS + CSS, no packa
 ## Architecture (message flow)
 
 - `content.js` (injected on all pages): toggle overlay input via Ctrl+Shift+Y; collects visible interactive elements, stamps each with `data-a11y-id` (`p-0`, `p-1`, ...), sends `{action:"navigate_to_point", query, elements:[{id, r, t}]}` to background.
-- `background.js` (service worker): relays the keyboard command as `{action:"open_input"}` to the active tab; on navigation it optionally refines the query with the on-device Prompt API (`LanguageModel`, legacy `aiLanguageModel` fallback; session destroyed after use), picks a target element id via the remote TypeSafe API (10s timeout), and falls back to substring match on `t`. Replies `{success, targetId}`; content.js then scrollIntoView + focus `[data-a11y-id="<targetId>"]`.
+- `background.js` (service worker): relays the keyboard command as `{action:"open_input"}` to the active tab; on navigation it optionally refines the query with the on-device Prompt API (`LanguageModel`, legacy `aiLanguageModel` fallback; session destroyed after use), then sends ONE `/v1/systemone` request batching two questions: a `choice` (which element) and a `score` (match quality, 4-level rubric). A score below level 2 returns `{success:false, reason:"ambiguous"}` instead of navigating; missing score, hallucinated id, or any API error degrade to substring match on `t`. On success replies `{success, targetId}`; content.js then scrollIntoView + focus `[data-a11y-id="<targetId>"]`.
 
 ## Gotchas
 
