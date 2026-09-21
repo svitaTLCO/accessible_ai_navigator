@@ -54,10 +54,9 @@ Italian
 
 | Permission | Type | Justification |
 |------------|------|---------------|
-| `aiLanguageModel` | permissions | Consumato solo dai browser che espongono il modello on-device integrato: raffina localmente la frase digitata in una parola chiave prima della selezione. Nessun dato lascia il dispositivo attraverso questo percorso; sui browser senza l'API l'estensione funziona identicamente senza di essa. |
 | `https://api.typesafe.ai/*` | host_permissions | Invia l'elenco degli elementi visibili della pagina corrente (ruolo ARIA + testo troncato a 60 caratteri, massimo 60 voci) insieme alla frase di destinazione digitata dall'utente al motore decisionale TypeSafe (Jev), che restituisce l'identificativo dell'elemento da raggiungere. Nessun altro endpoint di rete viene chiamato. |
 
-Note: le permission `activeTab` e `scripting` erano dichiarate ma non utilizzate dal codice e sono state rimosse (messaging verso i propri content script non richiede permessi). Lo script di contenuto è registrato staticamente nel manifest.
+Note: le permission `activeTab` e `scripting` erano dichiarate ma non utilizzate dal codice e sono state rimosse (messaging verso i propri content script non richiede permessi). Lo script di contenuto è registrato staticamente nel manifest. La permission sperimentale `aiLanguageModel` non è dichiarata: la documentazione corrente indica che l'API del modello on-device non richiede permission nel manifest, e alcuni build di Chrome segnalano quella stringa come sconosciuta con un avviso. Il codice rileva l'API al runtime e degrada elegantemente quando assente.
 
 ## Privacy & Data Use
 

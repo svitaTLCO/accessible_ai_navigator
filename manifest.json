@@ -3,9 +3,6 @@
   "name": "Accessible AI Browser Navigator",
   "version": "1.0.0",
   "description": "Naviga una pagina in linguaggio naturale: descrivi la destinazione e vai direttamente all'elemento giusto.",
-  "permissions": [
-    "aiLanguageModel"
-  ],
   "host_permissions": [
     "https://api.typesafe.ai/*"
   ],
