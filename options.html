@@ -9,22 +9,17 @@
 <body>
   <main class="panel">
     <h1>Opzioni del navigatore accessibile</h1>
-    <p class="hint">Scegli il motore usato per selezionare gli elementi della pagina. Senza configurazione viene usato il servizio predefinito.</p>
-
-    <fieldset>
-      <legend>Motore di selezione</legend>
-      <label class="radio"><input type="radio" name="provider" value="jev" checked> TypeSafe Jev (predefinito)</label>
-      <label class="radio"><input type="radio" name="provider" value="openaiCompatible"> Endpoint personalizzato (compatibile OpenAI)</label>
-    </fieldset>
+    <p class="hint">La selezione degli elementi è sempre affidata a TypeSafe Jev. Il secondo blocco, facoltativo, aggiunge un raffinamento della tua frase tramite un endpoint compatibile OpenAI che usi tu.</p>
 
     <section id="section-jev">
-      <h2>TypeSafe Jev</h2>
+      <h2>TypeSafe Jev <button id="test-jev-btn" type="button">Prova</button></h2>
       <label for="jev-key">Chiave API</label>
       <input type="password" id="jev-key" autocomplete="off" placeholder="Inserisci la chiave TypeSafe">
     </section>
 
-    <section id="section-custom">
-      <h2>Endpoint personalizzato (compatibile OpenAI)</h2>
+    <section id="section-refiner">
+      <h2>Raffinamento della frase (facoltativo, compatibile OpenAI) <button id="test-llm-btn" type="button">Prova</button></h2>
+      <p class="hint">Se compilato, riformula la frase digitata in una parola chiave prima della selezione. Se il browser mette a disposizione il modello locale, quello ha priorità e questo servizio non viene chiamato.</p>
       <label for="custom-url">URL di base</label>
       <input type="text" id="custom-url" placeholder="https://api.example.com/v1">
       <label for="custom-key">Chiave API</label>
@@ -34,7 +29,6 @@
     </section>
 
     <div class="actions">
-      <button id="test-btn" type="button">Testa connessione</button>
       <button id="save-btn" type="button">Salva</button>
       <button id="reset-btn" type="button">Ripristina predefiniti</button>
     </div>

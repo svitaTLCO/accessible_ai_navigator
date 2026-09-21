@@ -32,13 +32,12 @@ const MIN_MATCH_QUALITY = 2;
 const CONFIG_STORAGE_KEY = "llmProviderConfig";
 
 async function loadLlmConfig() {
-  const defaults = { provider: "jev", jevApiKey: "", baseUrl: "", apiKey: "", model: "" };
+  const defaults = { jevApiKey: "", baseUrl: "", apiKey: "", model: "" };
   try {
     const stored = await chrome.storage.local.get(CONFIG_STORAGE_KEY);
     const saved = stored[CONFIG_STORAGE_KEY] || {};
     const config = { ...defaults };
-    if (saved.provider === "jev" || saved.provider === "openaiCompatible") config.provider = saved.provider;
-    for (const field of ["jevApiKey", "baseUrl", "apiKey", "model"]) {
+    for (const field of Object.keys(defaults)) {
       if (typeof saved[field] === "string") config[field] = saved[field].trim();
     }
     if (config.baseUrl && !/^https:\/\//.test(config.baseUrl)) config.baseUrl = "";
@@ -53,17 +52,40 @@ function extractQuality(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function parseSelectionJson(rawContent) {
-  if (typeof rawContent !== "string") return null;
-  const text = rawContent.replace(/```(?:json)?/gi, "").trim();
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end <= start) return null;
+async function refineWithCloudLlm(baseUrl, apiKey, model, query) {
+  if (!baseUrl || !apiKey || !model) return null;
   try {
-    const parsed = JSON.parse(text.slice(start, end + 1));
-    if (typeof parsed.element_id !== "string") return null;
-    return { choice: parsed.element_id.trim(), quality: extractQuality(parsed.match_quality) };
+    const response = await fetch(baseUrl.replace(/\/+$/, "") + "/chat/completions", {
+      method: "POST",
+      signal: AbortSignal.timeout(10000),
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: model,
+        temperature: 0,
+        messages: [
+          {
+            role: "system",
+            content: "Estrai l'intenzione semantica principale o la parola chiave da una richiesta di navigazione web. Rispondi solo con la parola chiave, senza altre parole."
+          },
+          { role: "user", content: query }
+        ]
+      })
+    });
+    if (!response.ok) throw new Error("Il servizio di raffinamento ha risposto HTTP " + response.status);
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (typeof content !== "string") return null;
+    const refined = content
+      .replace(/^[\s"'`]+/, "")
+      .replace(/[\s"'`]+$/, "")
+      .split("\n")[0]
+      .trim();
+    return refined || null;
   } catch (error) {
+    console.warn("Raffinamento cloud non riuscito. Uso la query precedente.", error);
     return null;
   }
 }
@@ -117,53 +139,9 @@ async function selectWithSystemOne(apiKey, refinedIntent, elements) {
   return { decision, quality };
 }
 
-async function selectWithOpenAICompatible(baseUrl, apiKey, model, refinedIntent, elements) {
-  if (!baseUrl || !apiKey || !model) {
-    console.warn("Endpoint personalizzato incompleto (URL, chiave o modello mancanti). Uso il fallback locale.");
-    return { decision: null, quality: null };
-  }
-  const candidates = elements.map(el => `- ${el.id} | ruolo: ${el.r} | testo: "${el.t}"`).join("\n");
-  let selection = null;
-  try {
-    const response = await fetch(baseUrl.replace(/\/+$/, "") + "/chat/completions", {
-      method: "POST",
-      signal: AbortSignal.timeout(10000),
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: model,
-        temperature: 0,
-        messages: [
-          {
-            role: "system",
-            content: `Sei il selettore degli elementi di una pagina web. In base alla destinazione cercata dall'utente, scegli l'elemento più adatto tra i candidati disponibili. Rispondi esclusivamente con un oggetto JSON valido nel formato esatto: {"element_id": "<id dell'elemento>", "match_quality": <intero da 0 a 3>}, dove match_quality misura la qualità della corrispondenza: 0 = nessuna plausibile, 1 = debole o ambigua, 2 = ragionevole, 3 = chiara e univoca. Non includere altro testo, spiegazioni o marcature di codice.`
-          },
-          {
-            role: "user",
-            content: `Destinazione cercata: "${refinedIntent}".\n\nCandidati disponibili:\n${candidates}`
-          }
-        ]
-      })
-    });
-    if (!response.ok) throw new Error("Endpoint personalizzato ha risposto HTTP " + response.status);
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content ?? "";
-    selection = parseSelectionJson(content);
-  } catch (error) {
-    console.error("Errore endpoint personalizzato:", error);
-    if (error instanceof TypeError) {
-      console.warn("Possibile blocco di rete: verifica URL e che l'accesso all'host sia stato concesso dalla pagina Opzioni.");
-    }
-  }
-  const decision = selection ? { choice: selection.choice } : null;
-  const quality = selection ? selection.quality : null;
-  return { decision, quality };
-}
-
 async function handleNavigation(userQuery, elements) {
   let refinedIntent = userQuery;
+  let localRefined = false;
   const localModel = typeof LanguageModel !== 'undefined'
     ? LanguageModel
     : (typeof aiLanguageModel !== 'undefined' ? aiLanguageModel : undefined);
@@ -174,7 +152,10 @@ async function handleNavigation(userQuery, elements) {
       const answer = await session.prompt(
         `Estrai l'intenzione semantica principale o la parola chiave da questa richiesta di navigazione web: "${userQuery}". Rispondi solo con la parola chiave.`
       );
-      if (answer && answer.trim()) refinedIntent = answer.trim();
+      if (answer && answer.trim()) {
+        refinedIntent = answer.trim();
+        localRefined = true;
+      }
     } catch (e) {
       console.warn("Chrome AI local model non pronto. Uso query originale.", e);
     } finally {
@@ -183,19 +164,18 @@ async function handleNavigation(userQuery, elements) {
   }
 
   const config = await loadLlmConfig();
-  const selection = config.provider === "openaiCompatible"
-    ? await selectWithOpenAICompatible(config.baseUrl, config.apiKey, config.model, refinedIntent, elements)
-    : await selectWithSystemOne(config.jevApiKey, refinedIntent, elements);
+  if (!localRefined) {
+    const cloudKeyword = await refineWithCloudLlm(config.baseUrl, config.apiKey, config.model, refinedIntent);
+    if (cloudKeyword) refinedIntent = cloudKeyword;
+  }
 
-  const decision = selection.decision;
-  const quality = selection.quality;
+  const { decision, quality } = await selectWithSystemOne(config.jevApiKey, refinedIntent, elements);
   if (decision && decision.choice && elements.some(el => el.id === decision.choice)) {
     if (quality !== null && quality < MIN_MATCH_QUALITY) {
       console.warn("Corrispondenza ambigua (qualità " + quality + "). Navigazione bloccata.");
       return { targetId: null, ambiguous: true };
     }
-    const chosenBy = config.provider === "openaiCompatible" ? "dal provider personalizzato" : "da TypeSafe Jev";
-    console.info("Elemento scelto " + chosenBy + ":", decision.choice);
+    console.info("Elemento scelto da TypeSafe Jev:", decision.choice);
     return { targetId: decision.choice, ambiguous: false };
   }
 
