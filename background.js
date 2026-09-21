@@ -43,17 +43,15 @@ async function handleNavigation(userQuery, elements) {
   }
 
   const TYPESAFE_API_KEY = "IL_TUO_TYPESAFE_API_KEY";
-  const choices = elements.map(el => ({
-    value: el.id,
-    description: `Ruolo: ${el.r}, Testo: "${el.t}"`
-  }));
+  const criteria = {};
+  elements.forEach(el => { criteria[el.id] = `Ruolo: ${el.r}, Testo: "${el.t}"`; });
 
   let decision = null;
   if (TYPESAFE_API_KEY === "IL_TUO_TYPESAFE_API_KEY") {
     console.warn("Chiave TypeSafe non configurata in background.js. Salto l'API e uso il fallback locale.");
   } else {
     try {
-      const response = await fetch("https://api.typesafe.ai/v1/evaluate", {
+      const response = await fetch("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         signal: AbortSignal.timeout(10000),
         headers: {
@@ -62,14 +60,14 @@ async function handleNavigation(userQuery, elements) {
         },
         body: JSON.stringify({
           state: `L'utente vuole navigare verso un elemento correlato a: "${refinedIntent}". Scegli l'elemento corretto dalla lista.`,
-          questions: [
-            {
-              type: "Choice",
-              id: "target_element",
-              question: "Quale ID di elemento corrisponde meglio alla destinazione cercata dall'utente?",
-              choices: choices
+          model: "jev-latest",
+          questions: {
+            target_element: {
+              type: "choice",
+              instructions: "Quale ID di elemento corrisponde meglio alla destinazione cercata dall'utente?",
+              criteria: criteria
             }
-          ]
+          }
         })
       });
       if (!response.ok) throw new Error("TypeSafe Jev ha risposto HTTP " + response.status);
@@ -80,9 +78,9 @@ async function handleNavigation(userQuery, elements) {
     }
   }
 
-  if (decision && decision.best_choice) {
-    console.info("Elemento scelto da TypeSafe Jev:", decision.best_choice);
-    return decision.best_choice;
+  if (decision && decision.choice && elements.some(el => el.id === decision.choice)) {
+    console.info("Elemento scelto da TypeSafe Jev:", decision.choice);
+    return decision.choice;
   }
 
   const fallback = elements.find(el => el.t.toLowerCase().includes(refinedIntent.toLowerCase()));
