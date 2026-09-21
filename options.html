@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Opzioni – Accessible AI Browser Navigator</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="panel">
+    <h1>Opzioni del navigatore accessibile</h1>
+    <p class="hint">Scegli il motore usato per selezionare gli elementi della pagina. Senza configurazione viene usato il servizio predefinito.</p>
+
+    <fieldset>
+      <legend>Motore di selezione</legend>
+      <label class="radio"><input type="radio" name="provider" value="jev" checked> TypeSafe Jev (predefinito)</label>
+      <label class="radio"><input type="radio" name="provider" value="openaiCompatible"> Endpoint personalizzato (compatibile OpenAI)</label>
+    </fieldset>
+
+    <section id="section-jev">
+      <h2>TypeSafe Jev</h2>
+      <label for="jev-key">Chiave API</label>
+      <input type="password" id="jev-key" autocomplete="off" placeholder="Inserisci la chiave TypeSafe">
+    </section>
+
+    <section id="section-custom">
+      <h2>Endpoint personalizzato (compatibile OpenAI)</h2>
+      <label for="custom-url">URL di base</label>
+      <input type="text" id="custom-url" placeholder="https://api.example.com/v1">
+      <label for="custom-key">Chiave API</label>
+      <input type="password" id="custom-key" autocomplete="off" placeholder="Inserisci la chiave">
+      <label for="custom-model">Modello</label>
+      <input type="text" id="custom-model" placeholder="es. gpt-4o-mini">
+    </section>
+
+    <div class="actions">
+      <button id="test-btn" type="button">Testa connessione</button>
+      <button id="save-btn" type="button">Salva</button>
+      <button id="reset-btn" type="button">Ripristina predefiniti</button>
+    </div>
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

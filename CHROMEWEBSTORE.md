@@ -18,7 +18,7 @@ Dalla parte alta della pagina appare una barra di digitazione accessibile, ad al
 
 Come si usa: premi Ctrl+Shift+Y (Cmd+Shift+Y su Mac) per aprire la barra, digita la destinazione e premi Invio. Premi Esc per chiuderla. Se nessun elemento corrisponde, la barra te lo comunica.
 
-Privacy: per scegliere l'elemento, la frase digitata e un elenco limitato dei testi visibili nella pagina (massimo 60 voci, ognuna troncata a 60 caratteri) vengono inviati al servizio di analisi TypeSafe. Nessun altro dato viene raccolto, memorizzato o condiviso. Dove il browser lo consente, una parte dell'elaborazione avviene localmente nel dispositivo.
+Privacy: per scegliere l'elemento, la frase digitata e un elenco limitato dei testi visibili nella pagina (massimo 60 voci, ognuna troncata a 60 caratteri) vengono inviati al servizio di analisi del motore di selezione attivo: predefinito TypeSafe, oppure — solo se l'utente lo configura nella pagina Opzioni — l'endpoint personale scelto dall'utente, utilizzato esclusivamente con le chiavi da lui inserite. Nessuna informazione viene raccolta oltre a quella necessaria alla funzione; le chiavi configurate restano salvate soltanto nel profilo del browser. Dove il browser lo consente, una parte dell'elaborazione avviene localmente nel dispositivo.
 
 Segnalazioni e suggerimenti: s.vita@tlco.it [VERIFICA]
 
@@ -54,7 +54,9 @@ Italian
 
 | Permission | Type | Justification |
 |------------|------|---------------|
-| `https://api.typesafe.ai/*` | host_permissions | Invia l'elenco degli elementi visibili della pagina corrente (ruolo ARIA + testo troncato a 60 caratteri, massimo 60 voci) insieme alla frase di destinazione digitata dall'utente al motore decisionale TypeSafe (Jev), che restituisce l'identificativo dell'elemento da raggiungere. Nessun altro endpoint di rete viene chiamato. |
+| `https://api.typesafe.ai/*` | host_permissions | Invia l'elenco degli elementi visibili della pagina corrente (ruolo ARIA + testo troncato a 60 caratteri, massimo 60 voci) insieme alla frase di destinazione digitata dall'utente al motore decisionale TypeSafe (Jev), che restituisce l'identificativo dell'elemento da raggiungere. È il motore predefinito; nessun endpoint di rete viene chiamato finché l'utente non configura diversamente nelle Opzioni. |
+| `https://api.openai.com/*` | host_permissions | Raggiunto solo se l'utente configura esplicitamente questo servizio come endpoint di selezione personale dalla pagina Opzioni: viaggiano la stessa lista limitata di elementi e la frase digitata già dichiarate sopra, autenticate unicamente con la chiave inserita dall'utente. Non viene mai chiamato automaticamente. |
+| `https://*/*` | optional_host_permissions | Non richiesta né attiva di default. Solo dopo che l'utente salva un endpoint personalizzato, l'estensione chiede tramite il dialogo standard di consenso di Chrome l'accesso limitato all'host digitato (pattern `https://<host>/*`), necessario per inviare le stesse richieste limitate all'endpoint scelto. Può essere rifiutata e revocata in ogni momento dalle impostazioni estensione. |
 
 Note: le permission `activeTab` e `scripting` erano dichiarate ma non utilizzate dal codice e sono state rimosse (messaging verso i propri content script non richiede permessi). Lo script di contenuto è registrato staticamente nel manifest. La permission sperimentale `aiLanguageModel` non è dichiarata: la documentazione corrente indica che l'API del modello on-device non richiede permission nel manifest, e alcuni build di Chrome segnalano quella stringa come sconosciuta con un avviso. Il codice rileva l'API al runtime e degrada elegantemente quando assente.
 
@@ -73,10 +75,10 @@ Note: le permission `activeTab` e `scripting` erano dichiarate ma non utilizzate
 | Personal communications | No | No | | |
 | Location | No | No | | |
 | Web history | No | No | | |
-| User activity | Sì — la frase digitata come destinazione di navigazione | Sì | Funzione centrale: far scegliere l'elemento di destinazione | Sì — TypeSafe AI (fornitore del motore decisionale) |
-| Website content | Sì — ruoli ARIA e nomi accessibili degli elementi interattivi visibili nella pagina corrente (max 60 voci, testi troncati a 60 caratteri) | Sì | Funzione centrale: costruire l'insieme di candidati da cui selezionare l'elemento | Sì — TypeSafe AI (fornitore del motore decisionale) |
+| User activity | Sì — la frase digitata come destinazione di navigazione | Sì | Funzione centrale: far scegliere l'elemento di destinazione | Sì — TypeSafe AI (motore predefinito), oppure l'endpoint personale configurato dall'utente nelle Opzioni |
+| Website content | Sì — ruoli ARIA e nomi accessibili degli elementi interattivi visibili nella pagina corrente (max 60 voci, testi troncati a 60 caratteri) | Sì | Funzione centrale: costruire l'insieme di candidati da cui selezionare l'elemento | Sì — TypeSafe AI (motore predefinito), oppure l'endpoint personale configurato dall'utente nelle Opzioni |
 
-Nessun dato viene persistito nell'estensione o in `chrome.storage`. Il raffinamento on-device (dove disponibile) elabora solo la frase digitata, localmente.
+L'unica informazione persistita è la configurazione delle Opzioni (chiave TypeSafe e, se presente, URL, chiave e modello dell'endpoint personale), salvata in `chrome.storage.local` del profilo del browser: non è mai sincronizzata e non viene trasmessa ad alcun servizio oltre all'endpoint selezionato. Il raffinamento on-device (dove disponibile) elabora solo la frase digitata, localmente.
 
 ### Data Use Certification
 - [x] Data is NOT sold to third parties
@@ -111,14 +113,15 @@ s.vita@tlco.it
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.1.0 | 2026-09-21 | Pagina Opzioni: immissione locale della chiave TypeSafe e configurazione facoltativa di un endpoint di selezione personale compatibili OpenAI (salvati in `chrome.storage.local`, mai sincronizzati); permessi host ridotti ai preset con concessione opt-in per gli host personalizzati; navigazione bloccata con messaggio dedicato quando il motore valuta ambigua la corrispondenza. | Draft |
 | 1.0.0 | 2026-09-21 | Implementazione iniziale: navigazione assistita verso elementi di pagina tramite query in linguaggio naturale, overlay ad alto contrasto, raffinamento on-device opzionale, fallback locale. | Draft |
 
 ## Review Notes
 
 ### Known Issues / Limitations
 
-- La chiave API TypeSafe è un segnaposto nel repository (`IL_TUO_TYPESAFE_API_KEY` in `background.js`): va fornita localmente prima di ogni test e non deve mai essere committata.
+- Le chiavi API (TypeSafe e, facoltativamente, quella dell'endpoint personale) non fanno parte del repository: si inseriscono dalla pagina Opzioni e restano soltanto in `chrome.storage.local` del profilo del browser; non devono mai essere committate né condivise.
 - Il raffinamento on-device richiede un build recente di Chrome che esponga l'API `LanguageModel`; ovunque altrove il percorso degrada elegantemente (query originale → API remota → matching locale).
-- I content script girano su tutti i siti per definizione del prodotto (la destinazione può essere qualsiasi pagina): quando l'utente invia una query, i testi visibili viaggiano verso `api.typesafe.ai`. Da mantenere coerente con disclosure e privacy policy.
+- I content script girano su tutti i siti per definizione del prodotto (la destinazione può essere qualsiasi pagina): quando l'utente invia una query, i testi visibili viaggiano verso il motore di selezione attivo (predefinito `api.typesafe.ai`; eventualmente l'endpoint configurato nelle Opzioni). Da mantenere coerente con disclosure e privacy policy.
 - Prima della sottomissione vanno creati icona store e almeno uno screenshot (vedi tabella asset).
-- Per il ZIP di sottomissione escludere `.git/`, `CHROMEWEBSTORE.md` e qualsiasi file di sviluppo; includere solo `manifest.json`, `background.js`, `content.js`, `styles.css` (+ eventuali asset).
+- Per il ZIP di sottomissione escludere `.git/`, `CHROMEWEBSTORE.md` e qualsiasi file di sviluppo; includere solo `manifest.json`, `background.js`, `content.js`, `styles.css`, `options.html`, `options.css`, `options.js` (+ eventuali asset).
