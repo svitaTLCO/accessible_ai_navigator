@@ -52,23 +52,33 @@ const OFF_TOPIC_STREAK_MAX = 3;
 const JEV_MAX_OPTIONS = 240;
 const JEV_TOKEN_BUDGET = 24000;
 
-function estTokens(obj) {
-  return JSON.stringify(obj).length / 3;
+const A11Y_PERF = (typeof globalThis !== "undefined" && globalThis.A11Y_PERF === true);
+
+let jevLog = [];
+
+function perfNow() {
+  return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+}
+
+function perfReset() {
+  jevLog = [];
 }
 
 function fitBody(build, links, text) {
   let keptLinks = links;
   let keptText = text || "";
   let body = build(keptLinks, keptText);
-  while (estTokens(body) > JEV_TOKEN_BUDGET && (keptLinks.length > 10 || keptText.length > 500)) {
+  let bodyString = JSON.stringify(body);
+  while (bodyString.length / 3 > JEV_TOKEN_BUDGET && (keptLinks.length > 10 || keptText.length > 500)) {
     if (keptLinks.length > 10) keptLinks = keptLinks.slice(0, Math.max(10, Math.floor(keptLinks.length / 2)));
     else keptText = keptText.slice(0, Math.max(500, Math.floor(keptText.length / 2)));
     body = build(keptLinks, keptText);
+    bodyString = JSON.stringify(body);
   }
   if (keptLinks.length !== links.length || keptText.length !== (text || "").length) {
-    console.warn("[a11y-nav] corpo richiesta ridotto per limite token API:", keptLinks.length, "voci,", Math.round(estTokens(body)), "token stimati.");
+    console.warn("[a11y-nav] corpo richiesta ridotto per limite token API:", keptLinks.length, "voci,", Math.round(bodyString.length / 3), "token stimati.");
   }
-  return { links: keptLinks, text: keptText, body: body };
+  return { links: keptLinks, text: keptText, body: body, bodyString: bodyString };
 }
 
 const CONFIG_STORAGE_KEY = "llmProviderConfig";
@@ -135,8 +145,16 @@ function parseExpansionJson(rawContent, fallbackKeyword) {
   }
 }
 
+const tokenCache = new Map();
+
 function queryTokens(query) {
-  return (query || "").toLowerCase().split(/[^a-zà-ÿ0-9]+/i).filter(w => w.length > 2);
+  const key = query || "";
+  const cached = tokenCache.get(key);
+  if (cached) return cached;
+  const tokens = key.toLowerCase().split(/[^a-zà-ÿ0-9]+/i).filter(w => w.length > 2);
+  if (tokenCache.size > 200) tokenCache.clear();
+  tokenCache.set(key, tokens);
+  return tokens;
 }
 
 const CONTACT_INTENT_RE = /(contatt|scriv|email|e-mail|\bmail\b|telefon|chiam|assistenz|support|preventiv|parlar|operatore|consulenz)/i;
@@ -343,6 +361,7 @@ function chunkOf(list, page) {
 async function buildExpansion(userQuery) {
   let expansion = defaultExpansion(userQuery);
   let localRefined = false;
+  const configPromise = loadLlmConfig();
   const localModel = typeof LanguageModel !== 'undefined'
     ? LanguageModel
     : (typeof aiLanguageModel !== 'undefined' ? aiLanguageModel : undefined);
@@ -378,7 +397,7 @@ async function buildExpansion(userQuery) {
   }
 
   console.info("[a11y-nav] leggo configurazione...");
-  const config = await loadLlmConfig();
+  const config = await configPromise;
   console.info("[a11y-nav] configurazione: chiave Jev", config.jevApiKey ? "presente" : "assente", "raffinamento cloud", config.baseUrl ? "configurato" : "assente");
   if (!localRefined) {
     console.info("[a11y-nav] espansione cloud in corso...");
@@ -460,40 +479,47 @@ const BROWSE_OPERATIONS = ["CLICK", "SCROLL_DOWN", "SCROLL_UP", "WAIT", "DONE", 
 
 async function postSystemOne(apiKey, body, label) {
   const attempts = 3;
+  const startedAt = perfNow();
   let lastError = null;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    try {
-      const response = await fetch("https://api.typesafe.ai/v1/systemone", {
-        method: "POST",
-        signal: AbortSignal.timeout(20000),
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body)
-      });
-      if (response.status === 429 || response.status === 529 || response.status === 503) {
-        lastError = new Error("TypeSafe Jev ha risposto HTTP " + response.status);
-        await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
-        continue;
-      }
-      if (!response.ok) {
-        let detail = "";
-        try {
-          detail = " " + (await response.text()).substring(0, 300);
-        } catch (error) {
-          detail = "";
+  let status = 0;
+  try {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        const response = await fetch("https://api.typesafe.ai/v1/systemone", {
+          method: "POST",
+          signal: AbortSignal.timeout(20000),
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: typeof body === "string" ? body : JSON.stringify(body)
+        });
+        status = response.status;
+        if (response.status === 429 || response.status === 529 || response.status === 503) {
+          lastError = new Error("TypeSafe Jev ha risposto HTTP " + response.status);
+          await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
+          continue;
         }
-        throw new Error("TypeSafe Jev ha risposto HTTP " + response.status + "." + detail);
+        if (!response.ok) {
+          let detail = "";
+          try {
+            detail = " " + (await response.text()).substring(0, 300);
+          } catch (error) {
+            detail = "";
+          }
+          throw new Error("TypeSafe Jev ha risposto HTTP " + response.status + "." + detail);
+        }
+        return await response.json();
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts - 1 && /HTTP (429|529|503)/.test(error.message || "")) continue;
+        break;
       }
-      return await response.json();
-    } catch (error) {
-      lastError = error;
-      if (attempt < attempts - 1 && /HTTP (429|529|503)/.test(error.message || "")) continue;
-      break;
     }
+    throw lastError || new Error("TypeSafe Jev non raggiungibile");
+  } finally {
+    jevLog.push({ label: label, ms: Math.round(perfNow() - startedAt), status: status });
   }
-  throw lastError || new Error("TypeSafe Jev non raggiungibile");
 }
 
 function validProbabilities(probs, ids) {
@@ -527,8 +553,6 @@ async function decideBrowseStep(apiKey, mission, links, page) {
   // L'API rifiuta oltre 255 opzioni e scoppia oltre ~32k token: inviamo i migliori
   // per pertinenza (il contenuto li ordina già così), riducendo finché ci stiamo.
   // I link viaggiano solo nei criteria (niente array elementi duplicato).
-  let includeSection = true;
-  let twoStage = false;
   const build = (kept, text) => {
     const targets = {};
     const sections = {};
@@ -566,6 +590,14 @@ async function decideBrowseStep(apiKey, mission, links, page) {
         type: "noul",
         instructions: `Il solo contenuto principale della pagina corrente (testo in \`page.text\`, non i link) tratta già l'argomento che l'utente cerca? Rispondi sì se questa pagina È la destinazione cercata, anche se non c'è altro da cliccare.`
       },
+      complete: {
+        type: "noul",
+        instructions: `Tutto ciò che l'obiettivo chiede è già concluso nella pagina \`page\`, così che non serve più alcuna azione (come cliccare un altro link o inviare un modulo)?`
+      },
+      on_target: {
+        type: "noul",
+        instructions: `La pagina corrente è la pagina SPECIFICA che l'utente cercava, cioè la destinazione giusta da mostrargli per la sua richiesta? Rispondi no se sei sulla home del sito o su una pagina che si limita a nominare l'argomento in un menu o in un elenco: in quel caso la voce non è ancora stata aperta. Rispondi sì anche se non c'è un'azione da compiere (es. una pagina informativa o di servizio), purché sia la pagina specifica.`
+      },
       error: {
         type: "noul",
         instructions: "La pagina `page` mostra un errore, un rifiuto o un blocco (credenziali non valide, pagina non trovata, accesso negato) causato dalle azioni in `recent_actions`?"
@@ -590,7 +622,7 @@ async function decideBrowseStep(apiKey, mission, links, page) {
       }
     };
     const sectionKeys = Object.keys(sections);
-    if (includeSection && sectionKeys.length >= 2) {
+    if (sectionKeys.length >= 2) {
       const sectionCriteria = { "zz-none": "Nessuna zona o sezione è pertinente all'obiettivo" };
       sectionKeys.forEach(key => { sectionCriteria[key] = `Zona/sezione "${key}" — esempi: ${sections[key].join(" | ")}`; });
       questions.section = {
@@ -609,24 +641,10 @@ async function decideBrowseStep(apiKey, mission, links, page) {
       questions: questions
     };
   };
-  const ranked = links.slice().sort((a, b) => scoreLink(b, mission.expansion) - scoreLink(a, mission.expansion));
-  let candidateLinks = ranked;
-  if (ranked.length > JEV_MAX_OPTIONS) {
-    console.info("[a11y-nav] pagina con", ranked.length, "candidati: valuto la selezione a due stadi.");
-    const stage = await pickSectionStage(apiKey, mission, ranked, page);
-    if (stage && stage.confidence >= 0.6) {
-      const inSection = ranked.filter(l => linkSectionKey(l) === stage.key);
-      if (inSection.length >= 5) {
-        const seenIds = new Set(inSection.map(l => l.id));
-        candidateLinks = inSection.concat(ranked.filter(l => !seenIds.has(l.id)).slice(0, 40));
-        includeSection = false;
-        twoStage = true;
-        console.info("[a11y-nav] selezione a due stadi:", stage.key, "(conf", stage.confidence, ") →", inSection.length, "link in sezione + 40 di riserva");
-      }
-    } else if (stage) {
-      console.info("[a11y-nav] sezione poco sicura (", stage.key, stage.confidence, "): offro tutti i candidati.");
-    }
-  }
+  const scored = links.map(link => ({ link: link, score: scoreLink(link, mission.expansion) }));
+  scored.sort((a, b) => b.score - a.score);
+  const ranked = scored.map(e => e.link);
+  const candidateLinks = ranked;
   const fit = fitBody(build, candidateLinks.slice(0, JEV_MAX_OPTIONS), page.text);
   const offered = fit.links;
   let operation = null;
@@ -636,9 +654,11 @@ async function decideBrowseStep(apiKey, mission, links, page) {
   let siteError = null;
   let relevance = null;
   let onTopic = null;
+  let complete = null;
+  let onTarget = null;
   let apiError = "";
   try {
-    const data = await postSystemOne(apiKey, fit.body, "esplorazione");
+    const data = await postSystemOne(apiKey, fit.bodyString, "esplorazione");
     if (data.model) console.info("[a11y-nav] modello Jev esplorazione:", data.model);
     if (data.usage) console.info("[a11y-nav] utilizzo Jev esplorazione:", JSON.stringify(data.usage));
     const opAnswer = data.answers?.operation;
@@ -653,6 +673,8 @@ async function decideBrowseStep(apiKey, mission, links, page) {
     siteError = extractQuality(data.answers?.error?.noul);
     relevance = extractQuality(data.answers?.relevance?.score);
     onTopic = extractQuality(data.answers?.on_topic?.noul);
+    complete = extractQuality(data.answers?.complete?.noul);
+    onTarget = extractQuality(data.answers?.on_target?.noul);
     const sectionAnswer = data.answers?.section;
     const offeredSections = new Set(offered.map(linkSectionKey));
     if (sectionAnswer && typeof sectionAnswer.choice === "string" && offeredSections.has(sectionAnswer.choice)) {
@@ -670,91 +692,7 @@ async function decideBrowseStep(apiKey, mission, links, page) {
     apiError = error && error.message ? String(error.message) : "errore di rete";
   }
   const partialOffer = candidateLinks.length > offered.length;
-  return { operation: operation, target: target, offered: offered, sectionKey: sectionKey, twoStage: twoStage || partialOffer, done: done, siteError: siteError, relevance: relevance, onTopic: onTopic, apiError: apiError };
-}
-
-async function confirmBrowseDone(apiKey, mission, links, page, text) {
-  const body = {
-    state: {
-      page: { url: page.url, title: page.title, text: text },
-      goal: { original: mission.original, context: mission.expansion.context }
-    },
-    model: "jev-latest",
-    questions: {
-      complete: {
-        type: "noul",
-        instructions: "Tutto ciò che l'obiettivo chiede è già concluso nella pagina `page`, così che non serve più alcuna azione (come cliccare un altro link o inviare un modulo)?"
-      }
-    }
-  };
-  try {
-    const data = await postSystemOne(apiKey, body, "conferma");
-    return extractQuality(data.answers?.complete?.noul);
-  } catch (error) {
-    console.warn("[a11y-nav] conferma DONE non riuscita.", error);
-    return null;
-  }
-}
-
-async function confirmBrowseTarget(apiKey, mission, page, text) {
-  const body = {
-    state: {
-      page: { url: page.url, title: page.title, text: text },
-      goal: { original: mission.original, intento: mission.expansion.intent, context: mission.expansion.context }
-    },
-    model: "jev-latest",
-    questions: {
-      on_target: {
-        type: "noul",
-        instructions: "La pagina corrente è la pagina SPECIFICA che l'utente cercava, cioè la destinazione giusta da mostrargli per la sua richiesta? Rispondi no se sei sulla home del sito o su una pagina che si limita a nominare l'argomento in un menu o in un elenco: in quel caso la voce non è ancora stata aperta. Rispondi sì anche se non c'è un'azione da compiere (es. una pagina informativa o di servizio), purché sia la pagina specifica."
-      }
-    }
-  };
-  try {
-    const data = await postSystemOne(apiKey, body, "conferma-arrivo");
-    return extractQuality(data.answers?.on_target?.noul);
-  } catch (error) {
-    console.warn("[a11y-nav] conferma arrivo non riuscita.", error);
-    return null;
-  }
-}
-
-async function pickSectionStage(apiKey, mission, links, page) {
-  const sections = {};
-  links.forEach(link => {
-    const key = linkSectionKey(link);
-    if (!sections[key]) sections[key] = [];
-    if (sections[key].length < 3) sections[key].push((link.t || "").slice(0, 40));
-  });
-  const keys = Object.keys(sections);
-  if (keys.length < 2) return null;
-  const criteria = { "zz-none": "Nessuna sezione è più promettente delle altre" };
-  keys.forEach(key => { criteria[key] = `Zona/sezione "${key}" — esempi: ${sections[key].join(" | ")}`; });
-  const body = {
-    state: {
-      page: { url: page.url, title: page.title, text: (page.text || "").slice(0, 4000) },
-      goal: { original: mission.original, intento: mission.expansion.intent, parole_essenziali: mission.expansion.essential || [], context: mission.expansion.context }
-    },
-    model: "jev-latest",
-    questions: {
-      section: {
-        type: "choice",
-        criteria: criteria,
-        instructions: { goal: mission.original, rules: "La pagina ha molte sezioni. Quale zona o sezione è più promettente per raggiungere l'obiettivo? Scegli in base all'intestazione e agli esempi. Se nessuna è pertinente scegli zz-none." }
-      }
-    }
-  };
-  try {
-    const data = await postSystemOne(apiKey, body, "sezione");
-    const ans = data.answers?.section;
-    if (ans && typeof ans.choice === "string" && keys.includes(ans.choice)) {
-      const confidence = typeof ans.confidence === "number" && Number.isFinite(ans.confidence) ? ans.confidence : 1;
-      return { key: ans.choice, confidence: confidence };
-    }
-  } catch (error) {
-    console.warn("[a11y-nav] selezione sezione non riuscita.", error);
-  }
-  return null;
+  return { operation: operation, target: target, offered: offered, sectionKey: sectionKey, twoStage: partialOffer, done: done, siteError: siteError, relevance: relevance, onTopic: onTopic, complete: complete, onTarget: onTarget, apiError: apiError };
 }
 
 const BEAM_WIDTH = 30;
@@ -856,6 +794,23 @@ function readPage(request) {
 }
 
 async function handleBrowse(request) {
+  perfReset();
+  const t0 = perfNow();
+  const result = await handleBrowseInner(request);
+  if (A11Y_PERF) {
+    const jevMs = jevLog.reduce((sum, e) => sum + e.ms, 0);
+    result.perf = {
+      totalMs: Math.round(perfNow() - t0),
+      jevMs: Math.round(jevMs),
+      jevCalls: jevLog.length,
+      jev: jevLog.slice()
+    };
+    console.info("[a11y-nav][perf]", JSON.stringify(result.perf));
+  }
+  return result;
+}
+
+async function handleBrowseInner(request) {
   const page = readPage(request);
   const rawLinks = Array.isArray(request.links) ? request.links.filter(l => l && typeof l.id === "string" && typeof l.href === "string") : [];
   if (request.action === "browse_start") {
@@ -920,7 +875,6 @@ async function handleBrowse(request) {
   if (!advanced && links.length <= mission.lastLinks) mission.stillCount += 1;
   else mission.stillCount = 0;
   mission.lastLinks = links.length;
-  await saveMission(mission);
   if (mission.stillCount >= 3) {
     await clearMission();
     console.warn("[a11y-nav] nessun avanzamento per 3 osservazioni.");
@@ -982,7 +936,7 @@ async function searchLaterPages(mission, links, page, fromPage) {
     let data = null;
     try {
       console.info("[a11y-nav] pagina candidati", p + 1, "di", pages);
-      data = await postSystemOne(mission.jevApiKey, fit.body, "esplorazione-pagina");
+      data = await postSystemOne(mission.jevApiKey, fit.bodyString, "esplorazione-pagina");
     } catch (error) {
       console.error("Errore TypeSafe Jev pagina", p + 1, ":", error);
       continue;
@@ -1013,6 +967,7 @@ function toEntry(pick, step) {
 async function runBrowseStep(mission, links, page) {
   console.info("[a11y-nav] passo esplorazione", mission.step, page.url, "frontiera:", Array.isArray(mission.frontier) ? mission.frontier.length : 0);
   if (!Array.isArray(mission.frontier)) mission.frontier = [];
+  const localGoalTerms = goalTerms(mission);
   const result = await decideBrowseStep(mission.jevApiKey, mission, links, page);
   mission.twoStage = result.twoStage === true;
   const op = result.operation ? result.operation.choice : null;
@@ -1032,7 +987,7 @@ async function runBrowseStep(mission, links, page) {
   const scanFrom = mission.twoStage ? 0 : 1;
   if (!result.operation) {
     const rescued = links.length > JEV_MAX_OPTIONS ? await searchLaterPages(mission, links, page, scanFrom) : null;
-    const entry = toEntry(rescued || popFrontier(mission) || pickLocalLink(links, mission.visited, mission.expansion.variants, goalTerms(mission)), mission.step);
+    const entry = toEntry(rescued || popFrontier(mission) || pickLocalLink(links, mission.visited, mission.expansion.variants, localGoalTerms), mission.step);
     if (entry) {
       mission.trail.push({ step: mission.step, op: "CLICK", target: entry.id, url: page.url });
       await saveMission(mission);
@@ -1063,9 +1018,9 @@ async function runBrowseStep(mission, links, page) {
   }
   const arrivalStrong = result.done !== null && result.done >= 0.6 && (mission.step > 1 || result.done >= 0.85);
   if (op !== "DONE" && arrivalStrong) {
-    const confirmed = await confirmBrowseTarget(mission.jevApiKey, mission, page, page.text);
+    const confirmed = result.onTarget;
     console.info("[a11y-nav] contenuto pagina pertinente (arrivo", result.done, "), conferma destinazione:", confirmed);
-    if (confirmed !== null && confirmed >= 0.65) {
+    if (confirmed !== null && confirmed >= 0.6) {
       mission.trail.push({ step: mission.step, op: "DONE", target: null, url: page.url });
       await saveMission(mission);
       console.info("[a11y-nav] destinazione riconosciuta dal contenuto della pagina.");
@@ -1078,7 +1033,7 @@ async function runBrowseStep(mission, links, page) {
     let doneScore = result.done;
     if (doneScore === null) doneScore = typeof opProb === "number" ? opProb : 0;
     if (typeof opProb === "number" && opProb < 0.85) {
-      const confirmed = await confirmBrowseDone(mission.jevApiKey, mission, links, page, page.text);
+      const confirmed = result.complete;
       if (confirmed !== null) doneScore = confirmed;
       console.info("[a11y-nav] conferma DONE:", confirmed);
     }
@@ -1113,7 +1068,7 @@ async function runBrowseStep(mission, links, page) {
     }
     if (adjustedTarget) pushFrontier(mission, result.offered, adjustedTarget.probabilities);
     const rescued = links.length > JEV_MAX_OPTIONS ? await searchLaterPages(mission, links, page, scanFrom) : null;
-    const entry = toEntry(rescued || popFrontier(mission) || pickLocalLink(links, mission.visited, mission.expansion.variants, goalTerms(mission)), mission.step);
+    const entry = toEntry(rescued || popFrontier(mission) || pickLocalLink(links, mission.visited, mission.expansion.variants, localGoalTerms), mission.step);
     if (entry) {
       mission.trail.push({ step: mission.step, op: "CLICK", target: entry.id, url: page.url });
       await saveMission(mission);

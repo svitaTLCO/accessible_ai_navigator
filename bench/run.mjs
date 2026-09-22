@@ -28,6 +28,7 @@ if (!KEY) { console.error("No TYPESAFE_API_KEY (env or Keychain service typesafe
 const args = process.argv.slice(2);
 const tierArg = args.includes("--tier") ? Number(args[args.indexOf("--tier") + 1]) : null;
 const onlyArg = args.includes("--only") ? args[args.indexOf("--only") + 1].split(",") : null;
+const perfArg = args.includes("--perf");
 
 let jevCalls = 0;
 const realFetch = globalThis.fetch;
@@ -47,6 +48,7 @@ globalThis.chrome = {
   }
 };
 
+globalThis.A11Y_PERF = true;
 const src = fs.readFileSync(resolve(ROOT, "background.js"), "utf8");
 vm.runInThisContext(src + "\nglobalThis.__bg = { handleBrowse, clearMission, buildExpansion };", { filename: "background.js" });
 const bg = globalThis.__bg;
@@ -139,35 +141,46 @@ function withExpansion(task) {
 async function runBrowse(task) {
   withExpansion(task);
   await bg.clearMission();
+  const perf = { jevCalls: 0, jevMs: 0, bgMs: 0, calls: [] };
+  const call = async (req) => {
+    const res = await bg.handleBrowse(req);
+    if (res && res.perf) {
+      perf.jevCalls += res.perf.jevCalls || 0;
+      perf.jevMs += res.perf.jevMs || 0;
+      perf.bgMs += res.perf.totalMs || 0;
+      for (const e of res.perf.jev || []) perf.calls.push(e);
+    }
+    return res;
+  };
   let page = await fetchPage(task.start);
   if (!task.searchUrl) page.search = null;
   const visited = [];
-  let result = await bg.handleBrowse({ action: "browse_start", query: task.goal, ...payload(page) });
+  let result = await call({ action: "browse_start", query: task.goal, ...payload(page) });
   let status = result.status, finalUrl = page.url, steps = 1;
   for (let i = 0; i < (task.maxSteps || 5); i++) {
     if (result.status === "goto") {
       if (result.href) { visited.push(cleanHref(result.href)); page = await fetchPage(result.href); if (!task.searchUrl) page.search = null; finalUrl = page.url; }
       else { visited.push("toggle"); }
-      result = await bg.handleBrowse({ action: "browse_step", ...payload(page) });
+      result = await call({ action: "browse_step", ...payload(page) });
       status = result.status; steps++; continue;
     }
     if (result.status === "search_site") {
       if (typeof task.searchUrl === "function") {
         const u = task.searchUrl(result.text || task.goal);
         visited.push(cleanHref(u)); page = await fetchPage(u); finalUrl = page.url;
-        result = await bg.handleBrowse({ action: "browse_step", ...payload(page) });
+        result = await call({ action: "browse_step", ...payload(page) });
         status = result.status; steps++; continue;
       }
       status = "search_unsupported"; break;
     }
     if (["scroll_down", "scroll_up", "wait"].includes(result.status)) {
-      result = await bg.handleBrowse({ action: "browse_step", ...payload(page) });
+      result = await call({ action: "browse_step", ...payload(page) });
       status = result.status; steps++; continue;
     }
     if (result.href) visited.push(cleanHref(result.href));
     finalUrl = page.url; status = result.status; break;
   }
-  return { status, finalUrl: cleanHref(finalUrl), visited, steps };
+  return { status, finalUrl: cleanHref(finalUrl), visited, steps, perf };
 }
 
 function check(task, r) {
@@ -195,6 +208,16 @@ for (const task of tasks) {
   console.log(`[${c.pass ? "PASS" : "FAIL"}] T${task.tier} ${task.id}  (${r.steps} passi, ${jevCalls} chiamate Jev, ${Date.now() - t0}ms)`);
   console.log(`        atteso: ${task.expect.kind}${task.expect.includes || task.expect.bad ? " " + (task.expect.includes || "≠" + task.expect.bad) : ""} — ${task.note}`);
   console.log(`        ottenuto: ${c.detail}`);
+  if (perfArg && r.perf) {
+    const p = r.perf;
+    const byLabel = {};
+    for (const e of p.calls) {
+      byLabel[e.label] = byLabel[e.label] || { n: 0, ms: 0 };
+      byLabel[e.label].n++; byLabel[e.label].ms += e.ms;
+    }
+    const parts = Object.entries(byLabel).map(([k, v]) => `${k} ${v.n}×${v.ms}ms`).join(", ");
+    console.log(`        perf: Jev ${p.jevMs}ms (${p.jevCalls} chiamate), background ${p.bgMs}ms | ${parts}`);
+  }
 }
 
 console.log("\n================ RIEPILOGO ================");
@@ -210,3 +233,16 @@ for (const tier of Object.keys(byTier).sort((a, b) => a - b)) {
 console.log(`Totale: ${results.filter(x => x.c.pass).length}/${results.length}`);
 const fails = results.filter(x => !x.c.pass).map(x => x.task.id);
 if (fails.length) console.log("Falliti: " + fails.join(", "));
+
+if (perfArg) {
+  const budgets = results.filter(x => x.r.perf).map(x => x.r.perf);
+  const sum = (f) => budgets.reduce((s, p) => s + f(p), 0);
+  const jevMs = sum(p => p.jevMs), bgMs = sum(p => p.bgMs), calls = sum(p => p.jevCalls);
+  const steps = results.reduce((s, x) => s + (x.r.steps || 0), 0);
+  console.log("\n---------------- PERF --------------------");
+  console.log(`Jev tot ${jevMs}ms su ${calls} chiamate (${(jevMs / Math.max(1, calls)).toFixed(0)}ms/chiamata)`);
+  console.log(`Background tot ${bgMs}ms su ${steps} passi (${(bgMs / Math.max(1, steps)).toFixed(0)}ms/passo)`);
+  const byLabel = {};
+  for (const p of budgets) for (const e of p.calls) { byLabel[e.label] = byLabel[e.label] || { n: 0, ms: 0 }; byLabel[e.label].n++; byLabel[e.label].ms += e.ms; }
+  for (const [k, v] of Object.entries(byLabel)) console.log(`  ${k}: ${v.n}× ${v.ms}ms (${(v.ms / v.n).toFixed(0)}ms)`);
+}

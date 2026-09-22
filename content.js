@@ -1,6 +1,17 @@
 let overlay = null;
 let missionTimer = null;
 let returnFocusEl = null;
+let lastRequestAt = null;
+
+const A11Y_PERF = false;
+
+function perfNow() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+
+function perfLog(message) {
+  if (A11Y_PERF) console.info("[a11y-nav][perf] " + message);
+}
 
 const prefersReducedMotion = () =>
   typeof window.matchMedia === 'function' &&
@@ -8,6 +19,46 @@ const prefersReducedMotion = () =>
 
 function scrollBehavior() {
   return prefersReducedMotion() ? 'auto' : 'smooth';
+}
+
+function settle(callback, maxMs) {
+  let done = false;
+  let quietTimer = null;
+  let maxTimer = null;
+  const observer = new MutationObserver(() => {
+    if (done) return;
+    if (quietTimer) clearTimeout(quietTimer);
+    quietTimer = setTimeout(finish, 300);
+  });
+  function finish() {
+    if (done) return;
+    done = true;
+    if (quietTimer) clearTimeout(quietTimer);
+    if (maxTimer) clearTimeout(maxTimer);
+    observer.disconnect();
+    callback();
+  }
+  try {
+    observer.observe(document.body || document.documentElement, { childList: true, subtree: true, characterData: true });
+  } catch (error) {
+    // senza osservatore il tetto massimo garantisce comunque l'avanzamento
+  }
+  quietTimer = setTimeout(finish, 300);
+  maxTimer = setTimeout(finish, maxMs);
+  return function cancelSettle() {
+    if (done) return;
+    done = true;
+    if (quietTimer) clearTimeout(quietTimer);
+    if (maxTimer) clearTimeout(maxTimer);
+    observer.disconnect();
+  };
+}
+
+function cancelMissionTimer() {
+  if (!missionTimer) return;
+  if (typeof missionTimer === 'function') missionTimer();
+  else clearTimeout(missionTimer);
+  missionTimer = null;
 }
 
 function overlayEscHandler(e) {
@@ -18,7 +69,7 @@ function overlayEscHandler(e) {
 }
 
 function removeOverlay(restoreFocus = false) {
-  if (missionTimer) { clearTimeout(missionTimer); missionTimer = null; }
+  cancelMissionTimer();
   document.removeEventListener('keydown', overlayEscHandler);
   if (overlay) { overlay.remove(); overlay = null; }
   if (restoreFocus && returnFocusEl && document.contains(returnFocusEl) && typeof returnFocusEl.focus === 'function') {
@@ -132,17 +183,43 @@ function stripTracking(url) {
   }
 }
 
-const STATIC_FILE_RE = /\.(pdf|zip|rar|7z|gz|tgz|tar|docx?|xlsx?|pptx?|odt|ods|odp|csv|txt|rtf|png|jpe?g|gif|webp|svg|bmp|ico|mp4|m4v|mp3|wav|avi|mov|mkv|webm|exe|dmg|pkg|apk|iso)$/i;
+let headingScopeCache = null;
+let rowTextCache = null;
 
-function isStaticFileUrl(url) {
-  if (typeof url !== "string") return false;
+function isHidden(el) {
+  if (el.hasAttribute && el.hasAttribute('aria-hidden')) return true;
+  if (typeof el.checkVisibility === 'function') {
+    return !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+  }
+  const rect = el.getBoundingClientRect();
+  const style = window.getComputedStyle(el);
+  return style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' || (rect.width === 0 && rect.height === 0);
+}
+
+function cleanParsedUrl(rawHref) {
+  if (typeof rawHref !== "string" || !rawHref) return null;
+  if (/^mailto:/i.test(rawHref)) return { href: rawHref, url: null, email: true };
   try {
-    const path = new URL(url, location.href).pathname;
-    return STATIC_FILE_RE.test(path);
+    const u = new URL(rawHref, location.href);
+    for (const key of [...u.searchParams.keys()]) {
+      const low = key.toLowerCase();
+      if (TRACKING_PARAM_PREFIXES.some(p => low === p || low.startsWith(p))) u.searchParams.delete(key);
+    }
+    return { href: u.href, url: u, email: false };
   } catch (error) {
-    return STATIC_FILE_RE.test((url.split(/[?#]/)[0] || ""));
+    return null;
   }
 }
+
+function normalizeParsedUrl(u) {
+  try {
+    return (u.origin + u.pathname.replace(/\/+$/, "") + u.search).toLowerCase();
+  } catch (error) {
+    return "";
+  }
+}
+
+const STATIC_FILE_RE = /\.(pdf|zip|rar|7z|gz|tgz|tar|docx?|xlsx?|pptx?|odt|ods|odp|csv|txt|rtf|png|jpe?g|gif|webp|svg|bmp|ico|mp4|m4v|mp3|wav|avi|mov|mkv|webm|exe|dmg|pkg|apk|iso)$/i;
 
 function normalizePageUrl(url) {
   try {
@@ -151,11 +228,6 @@ function normalizePageUrl(url) {
   } catch (error) {
     return "";
   }
-}
-
-function isSamePage(a, b) {
-  const na = normalizePageUrl(a);
-  return !!na && na === normalizePageUrl(b);
 }
 
 const ZONE_RE = 'nav, [role="navigation"], header, [role="banner"], footer, [role="contentinfo"], aside, [role="complementary"], main, [role="main"], form[role="search"]';
@@ -172,16 +244,33 @@ function zoneOf(el) {
   return "contenuto";
 }
 
+function headingList(scope) {
+  if (headingScopeCache && headingScopeCache.has(scope)) return headingScopeCache.get(scope);
+  const nodes = Array.from(scope.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+  const entry = {
+    nodes: nodes,
+    text: nodes.map(h => (h.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80))
+  };
+  if (headingScopeCache) headingScopeCache.set(scope, entry);
+  return entry;
+}
+
 function sectionHeading(el) {
   const scope = el.closest('section, article, [role="region"], nav, header, footer, aside, main, form') || document.body;
   if (!scope) return "";
-  const headings = scope.querySelectorAll('h1, h2, h3, h4, h5, h6');
-  let best = "";
-  for (const h of headings) {
-    if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) best = h;
+  const headings = headingList(scope);
+  let lo = 0, hi = headings.nodes.length - 1, best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (headings.nodes[mid].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
-  if (!best) return "";
-  return (best.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80);
+  if (best === -1) return "";
+  return headings.text[best];
 }
 
 function zoneWeight(zone) {
@@ -194,68 +283,63 @@ function zoneWeight(zone) {
 }
 
 function collectLinks(query) {
-  const rawLinks = document.querySelectorAll('a[href]');
-  const nodes = [];
+  headingScopeCache = new WeakMap();
+  rowTextCache = new WeakMap();
+  try {
+    const rawLinks = document.querySelectorAll('a[href]');
+    const nodes = [];
+    const pageNorm = normalizePageUrl(location.href);
 
-  rawLinks.forEach((el) => {
-    const rect = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    if (
-      style.display === 'none' ||
-      style.visibility === 'hidden' ||
-      style.opacity === '0' ||
-      (rect.width === 0 && rect.height === 0) ||
-      el.hasAttribute('aria-hidden')
-    ) {
-      return;
-    }
-    let href = "";
-    try {
-      href = stripTracking(new URL(el.getAttribute('href'), location.href).href);
-    } catch (error) {
-      return;
-    }
-    if (!/^https?:\/\//.test(href) && !/^mailto:/i.test(href)) return;
-    const isEmail = /^mailto:/i.test(href);
-    if (!isEmail && isStaticFileUrl(href)) return;
-    if (!isEmail && isSamePage(href, location.href)) return;
+    rawLinks.forEach((el) => {
+      if (isHidden(el)) return;
+      const parsed = cleanParsedUrl(el.getAttribute('href'));
+      if (!parsed) return;
+      const href = parsed.href;
+      if (!parsed.email && !/^https?:\/\//.test(href)) return;
+      const isEmail = parsed.email;
+      if (!isEmail && STATIC_FILE_RE.test(parsed.url.pathname)) return;
+      if (!isEmail && pageNorm && normalizeParsedUrl(parsed.url) === pageNorm) return;
 
-    let accessibleName = (
-      el.getAttribute('aria-label') ||
-      el.innerText ||
-      el.getAttribute('title') ||
-      extraName(el) ||
-      shareName(el) ||
-      ''
-    ).trim().replace(/\s+/g, ' ');
-    if (!accessibleName) return;
+      let accessibleName = (
+        el.getAttribute('aria-label') ||
+        el.innerText ||
+        el.getAttribute('title') ||
+        extraName(el) ||
+        shareName(el) ||
+        ''
+      ).trim().replace(/\s+/g, ' ');
+      if (!accessibleName) return;
 
-    nodes.push({
-      el: el,
-      t: accessibleName,
-      href: href,
-      email: isEmail,
-      near: rowContext(el, accessibleName),
-      zone: zoneOf(el),
-      heading: sectionHeading(el)
+      nodes.push({
+        el: el,
+        t: accessibleName,
+        href: href,
+        email: isEmail,
+        near: rowContext(el, accessibleName),
+        zone: zoneOf(el),
+        heading: sectionHeading(el)
+      });
     });
-  });
 
-  const ranked = dedupeLinks(rankLinksByQuery(nodes, query));
-  let linkCounter = 0;
-  const items = ranked.map((n) => {
-    if (!n.el.getAttribute('data-a11y-id') || !n.el.getAttribute('data-a11y-id').startsWith('l-')) {
-      n.el.setAttribute('data-a11y-id', `l-${linkCounter++}`);
-    }
-    return { id: n.el.getAttribute('data-a11y-id'), t: n.t, href: n.href, email: !!n.email, near: n.near, zone: n.zone, heading: n.heading };
-  });
-  const toggles = collectMenuToggles().map((n) => {
-    if (!n.el.getAttribute('data-a11y-id') || !n.el.getAttribute('data-a11y-id').startsWith('l-')) {
-      n.el.setAttribute('data-a11y-id', `l-${linkCounter++}`);
-    }
-    return { id: n.el.getAttribute('data-a11y-id'), t: n.t, href: "", email: false, near: "", zone: "menu", heading: n.heading || "", toggle: true };
-  });
-  return items.concat(toggles);
+    const ranked = dedupeLinks(rankLinksByQuery(nodes, query));
+    let linkCounter = 0;
+    const items = ranked.map((n) => {
+      if (!n.el.getAttribute('data-a11y-id') || !n.el.getAttribute('data-a11y-id').startsWith('l-')) {
+        n.el.setAttribute('data-a11y-id', `l-${linkCounter++}`);
+      }
+      return { id: n.el.getAttribute('data-a11y-id'), t: n.t, href: n.href, email: !!n.email, near: n.near, zone: n.zone, heading: n.heading };
+    });
+    const toggles = collectMenuToggles().map((n) => {
+      if (!n.el.getAttribute('data-a11y-id') || !n.el.getAttribute('data-a11y-id').startsWith('l-')) {
+        n.el.setAttribute('data-a11y-id', `l-${linkCounter++}`);
+      }
+      return { id: n.el.getAttribute('data-a11y-id'), t: n.t, href: "", email: false, near: "", zone: "menu", heading: n.heading || "", toggle: true };
+    });
+    return items.concat(toggles);
+  } finally {
+    headingScopeCache = null;
+    rowTextCache = null;
+  }
 }
 
 function collectMenuToggles() {
@@ -264,9 +348,7 @@ function collectMenuToggles() {
   const candidates = document.querySelectorAll('[aria-haspopup], summary, button[aria-expanded], [role="button"][aria-expanded], nav [aria-expanded], header [aria-expanded], [aria-expanded][aria-controls]');
   candidates.forEach((el) => {
     if (seen.has(el)) return;
-    const rect = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden' || (rect.width === 0 && rect.height === 0) || el.hasAttribute('aria-hidden')) return;
+    if (isHidden(el)) return;
     const expanded = el.getAttribute('aria-expanded');
     const haspopup = el.getAttribute('aria-haspopup');
     const controls = el.getAttribute('aria-controls');
@@ -289,12 +371,20 @@ function collectMenuToggles() {
     .map((n) => ({ el: n.el, t: n.t, heading: n.heading }));
 }
 
+function rowText(node) {
+  if (!rowTextCache) return (node.innerText || "").trim().replace(/\s+/g, " ");
+  if (rowTextCache.has(node)) return rowTextCache.get(node);
+  const text = (node.innerText || "").trim().replace(/\s+/g, " ");
+  rowTextCache.set(node, text);
+  return text;
+}
+
 function rowContext(el, ownName) {
   const own = (ownName || "").trim();
   if (own.length >= 16) return "";
   let node = el.parentElement;
   for (let depth = 0; node && depth < 5; depth++, node = node.parentElement) {
-    const text = (node.innerText || "").trim().replace(/\s+/g, " ");
+    const text = rowText(node);
     if (text && text !== own) {
       if (text.length <= 100) return text;
       break;
@@ -302,7 +392,7 @@ function rowContext(el, ownName) {
   }
   const row = el.closest("li, tr, [role='row'], [role='listitem']");
   if (row && row !== el) {
-    const text = (row.innerText || "").trim().replace(/\s+/g, " ").slice(0, 100);
+    const text = rowText(row).slice(0, 100);
     if (text && text !== own) return text;
   }
   return "";
@@ -350,16 +440,26 @@ function collectPageText() {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const inView = [];
   const below = [];
+  const parentInfo = new Map();
+  const infoFor = (parent) => {
+    if (parentInfo.has(parent)) return parentInfo.get(parent);
+    let info = null;
+    if (!["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"].includes(parent.tagName) && !parent.closest(CHROME_SEL)) {
+      const rect = parent.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0 && !isHidden(parent)) info = rect;
+    }
+    parentInfo.set(parent, info);
+    return info;
+  };
   let node = walker.nextNode();
   let total = 0;
   const vh = window.innerHeight || 0;
   while (node && total < 8000) {
     const text = (node.nodeValue || "").trim().replace(/\s+/g, " ");
     const parent = node.parentElement;
-    if (text && parent && !["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"].includes(parent.tagName) && !parent.closest(CHROME_SEL)) {
-      const rect = parent.getBoundingClientRect();
-      const style = window.getComputedStyle(parent);
-      if (rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && !parent.hasAttribute('aria-hidden')) {
+    if (text && parent) {
+      const rect = infoFor(parent);
+      if (rect) {
         if (rect.bottom >= 0 && rect.top <= vh) inView.push(text);
         else below.push(text);
         total += text.length + 1;
@@ -405,8 +505,11 @@ function repeatedLinkTexts(links) {
 let lastObservation = null;
 
 function insertedText(before, after, max) {
-  const A = String(before || "").split(" ").slice(0, 600);
-  const B = String(after || "").split(" ").slice(0, 600);
+  const prev = String(before || "");
+  const next = String(after || "");
+  if (prev === next) return "";
+  const A = prev.split(" ").slice(0, 600);
+  const B = next.split(" ").slice(0, 600);
   const n = A.length, m = B.length;
   const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
@@ -472,9 +575,8 @@ function findSiteSearch() {
     const type = (input.getAttribute('type') || 'text').toLowerCase();
     if (!['text', 'search', ''] .includes(type)) continue;
     const rect = input.getBoundingClientRect();
-    const style = window.getComputedStyle(input);
     if (rect.width < 40 || rect.height < 8) continue;
-    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    if (isHidden(input)) continue;
     if (input.disabled || input.readOnly) continue;
     const form = input.form || input.closest('form');
     const submit = (form && form.querySelector('button[type="submit"], input[type="submit"], button:not([type])')) || null;
@@ -509,14 +611,20 @@ function pagePayload() {
 }
 
 function sendBrowseStep() {
+  const t0 = perfNow();
   const payload = pagePayload();
+  const t1 = perfNow();
   const links = collectLinks();
+  const t2 = perfNow();
   console.info("[a11y-nav] osservazione link:", links.length);
   if (links.length === 0) {
     console.info("[a11y-nav] nessun link utile qui: chiedo al servizio un ripiego.");
   }
   const change = computeChange(links, payload);
+  const t3 = perfNow();
+  perfLog(`step extract payload=${Math.round(t1 - t0)}ms links=${Math.round(t2 - t1)}ms change=${Math.round(t3 - t2)}ms (${links.length} link)`);
   rememberObservation(links, payload);
+  lastRequestAt = perfNow();
   chrome.runtime.sendMessage({
     action: "browse_step",
     links: links,
@@ -533,8 +641,12 @@ function sendBrowseStep() {
 }
 
 function startMission(query, status) {
+  const t0 = perfNow();
   const payload = pagePayload();
+  const t1 = perfNow();
   const links = collectLinks(query);
+  const t2 = perfNow();
+  perfLog(`start extract payload=${Math.round(t1 - t0)}ms links=${Math.round(t2 - t1)}ms (${links.length} link)`);
   console.info("[a11y-nav] avvio esplorazione:", query, "link:", links.length);
   if (links.length === 0) {
     status.textContent = "Nessun link da seguire in questa pagina.";
@@ -542,6 +654,7 @@ function startMission(query, status) {
   }
   lastObservation = null;
   status.textContent = "Avvio esplorazione...";
+  lastRequestAt = perfNow();
   chrome.runtime.sendMessage({
     action: "browse_start",
     query: query,
@@ -558,10 +671,8 @@ function startMission(query, status) {
 
 function continueMission(mission) {
   showMissionBar(`Passo ${mission.step} · ${mission.original}. Continuo l'esplorazione...`);
-  if (missionTimer) clearTimeout(missionTimer);
-  missionTimer = setTimeout(() => {
-    sendBrowseStep();
-  }, 900);
+  cancelMissionTimer();
+  missionTimer = settle(() => sendBrowseStep(), 900);
 }
 
 function ensureMissionOverlay() {
@@ -603,7 +714,7 @@ function showMissionBar(message) {
 }
 
 function stopMission(notify) {
-  if (missionTimer) { clearTimeout(missionTimer); missionTimer = null; }
+  cancelMissionTimer();
   try {
     chrome.runtime.sendMessage({ action: "browse_stop" }, () => {});
   } catch (error) {
@@ -613,6 +724,11 @@ function stopMission(notify) {
 }
 
 function handleBrowseResponse(response) {
+  if (lastRequestAt !== null) {
+    perfLog(`roundtrip=${Math.round(perfNow() - lastRequestAt)}ms`);
+    lastRequestAt = null;
+  }
+  if (response && response.perf) perfLog(`background ${JSON.stringify(response.perf)}`);
   console.info("[a11y-nav] risposta esplorazione:", response, "errore:", chrome.runtime.lastError?.message);
   if (chrome.runtime.lastError || !response) {
     showMissionBar(`Errore estensione: ricarica la pagina e riprova.`);
@@ -653,12 +769,12 @@ function handleBrowseResponse(response) {
   if (response.status === "scroll_down" || response.status === "scroll_up") {
     showMissionBar(`Passo ${response.step} · scorro la pagina...`);
     window.scrollBy({ top: response.status === "scroll_down" ? 560 : -560, behavior: scrollBehavior() });
-    setTimeout(() => sendBrowseStep(), 900);
+    missionTimer = settle(() => sendBrowseStep(), 900);
     return;
   }
   if (response.status === "wait") {
     showMissionBar(`Passo ${response.step} · attendo il caricamento...`);
-    setTimeout(() => sendBrowseStep(), 2000);
+    missionTimer = settle(() => sendBrowseStep(), 2000);
     return;
   }
   if (response.status === "search_site") {
@@ -682,7 +798,7 @@ function handleBrowseResponse(response) {
       } else {
         input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
       }
-      setTimeout(() => sendBrowseStep(), 1500);
+      missionTimer = settle(() => sendBrowseStep(), 1500);
     }, 700);
     return;
   }
