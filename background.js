@@ -19,26 +19,6 @@ chrome.commands.onCommand.addListener(async (command) => {
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "navigate_to_point") {
-    (async () => {
-      try {
-        const result = await handleNavigation(request.query, request.elements);
-        if (result.targetId) {
-          sendResponse({ success: true, targetId: result.targetId });
-        } else if (result.ambiguous) {
-          sendResponse({ success: false, reason: "ambiguous", bestLabel: result.bestLabel || "", quality: result.quality ?? null });
-        } else if (result.notfound) {
-          sendResponse({ success: false, reason: "notfound" });
-        } else {
-          sendResponse({ success: false });
-        }
-      } catch (err) {
-        console.error(err);
-        sendResponse({ success: false });
-      }
-    })();
-    return true;
-  }
   if (request.action === "browse_start" || request.action === "browse_step") {
     (async () => {
       try {
@@ -356,131 +336,8 @@ async function refineWithCloudLlm(baseUrl, apiKey, model, query) {
   }
 }
 
-function selectionState(expansion) {
-  const terms = queryTokens(expansion.original);
-  const essential = Array.isArray(expansion.essential) ? expansion.essential : [];
-  return `Stai pilotando un browser per conto dell'utente. Richiesta originale: "${expansion.original}".${expansion.intent ? ` Intento dell'utente: ${expansion.intent}.` : ""}${essential.length ? ` Parole essenziali (peso MASSIMO: sono l'oggetto preciso cercato, non le parole generiche): ${essential.map(v => `"${v}"`).join(", ")}.` : ""} Vocabolario di supporto (sinonimi e riformulazioni, peso minore): ${expansion.variants.map(v => `"${v}"`).join(", ")}.${expansion.context ? ` Contesto: ${expansion.context}.` : ""} Regola di ordinamento: un candidato che contiene le parole della richiesta originale (${terms.map(v => `"${v}"`).join(", ") || "nessuna"}) batte SEMPRE uno che corrisponde solo a un sinonimo (es. per "email redazione", Redazione batte Scriveteci)${essential.length ? "; e tra le parole originali, quelle essenziali battono quelle generiche" : ""}. Usa i sinonimi solo per riconoscere parafrasi quando nessun candidato contiene le parole originali, mai per tradurre la richiesta. Non cambiare l'azione richiesta: se l'intento è comprare o cercare un prodotto, un collegamento email o di contatto non è pertinente anche se un sinonimo lo suggerisce. Nella lista candidati ogni voce ha un ID opaco (p-0, p-1, ...) con ruolo e testo visibile dell'elemento. Scegli l'elemento su cui spostare focus e scorrimento.`;
-}
-
-function selectionQuestions(criteria) {
-  return {
-      target_element: {
-        type: "choice",
-        instructions: "Quale ID di elemento porta l'utente alla destinazione cercata? Gli ID sono etichette opache: decidi solo per corrispondenza semantica tra destinazione, ruolo e testo. Scala di valore: il candidato che contiene le parole della richiesta originale batte sempre quello che corrisponde solo a un sinonimo (es. per email redazione, Redazione batte Scriveteci). Non tradurre la richiesta in sinonimi. Se nessuna voce corrisponde davvero, scegli zz-none.",
-        criteria: criteria
-      },
-    match_quality: {
-      type: "score",
-      instructions: "Quanto la destinazione cercata corrisponde in modo chiaro e univoco al miglior elemento della lista?",
-      criteria: [
-        "nessun candidato c'entra con la destinazione (es. cerca carrello, lista solo voci di menu sport)",
-        "corrispondenza debole o ambigua (es. cerca email redazione, lista con Redazione e Scriveteci senza email)",
-        "corrispondenza ragionevole (es. cerca contatti, lista con un link Contatti)",
-        "corrispondenza chiara e univoca (es. cerca carrello, lista con un pulsante Carrello)"
-      ]
-    },
-    is_clear: {
-      type: "noul",
-      instructions: "La destinazione cercata ha una corrispondenza chiara e univoca tra gli elementi elencati?",
-      criteria: {
-        "true": "esiste un elemento che corrisponde chiaramente alla destinazione",
-        "false": "nessun elemento corrisponde chiaramente oppure più elementi sono plausibili"
-      }
-    }
-  };
-}
-
-function selectionCriteria(els) {
-  const criteria = { "zz-none": "Nessuna voce della lista corrisponde alla destinazione cercata" };
-  els.forEach(el => {
-    const where = el.zone ? `, Zona: ${el.zone}${el.heading ? `, Sezione: "${el.heading}"` : ""}` : "";
-    criteria[el.id] = `Ruolo: ${el.r}, Testo: "${el.t}"${where}`;
-  });
-  return criteria;
-}
-
-function selectionBody(stateString, criteria) {
-  return {
-    state: stateString,
-    model: "jev-latest",
-    questions: selectionQuestions(criteria)
-  };
-}
-
-function parseSelectionAnswers(data) {
-  const decision = data.answers?.target_element;
-  const quality = extractQuality(data.answers?.match_quality?.score);
-  const confidence = typeof decision?.confidence === "number" && Number.isFinite(decision.confidence) ? decision.confidence : null;
-  const rawClear = data.answers?.is_clear?.noul;
-  const isClear = typeof rawClear === "number" && Number.isFinite(rawClear) ? rawClear : null;
-  return { decision: decision, quality: quality, confidence: confidence, isClear: isClear };
-}
-
-async function callSelection(apiKey, stateString, criteria) {
-  const data = await postSystemOne(apiKey, selectionBody(stateString, criteria), "selezione");
-  if (data.model) console.info("[a11y-nav] modello Jev:", data.model);
-  if (data.usage) console.info("[a11y-nav] utilizzo Jev:", JSON.stringify(data.usage));
-  return parseSelectionAnswers(data);
-}
-
 function chunkOf(list, page) {
   return list.slice(page * JEV_MAX_OPTIONS, (page + 1) * JEV_MAX_OPTIONS);
-}
-
-async function selectWithSystemOne(apiKey, expansion, elements) {
-  if (!apiKey) {
-    console.warn("Chiave TypeSafe non configurata. Salto l'API e uso il fallback locale.");
-    return { status: "failed" };
-  }
-  const stateString = selectionState(expansion);
-  const pages = Math.max(1, Math.ceil(elements.length / JEV_MAX_OPTIONS));
-  let bestGhost = null;
-  let sawNotFound = false;
-  for (let page = 0; page < pages; page++) {
-    const fit = fitBody(
-      (kept) => selectionBody(stateString, selectionCriteria(kept)),
-      chunkOf(elements, page),
-      ""
-    );
-    if (fit.links.length === 0) continue;
-    let result = null;
-    try {
-      console.info("[a11y-nav] chiamata TypeSafe Jev in corso... pagina", page + 1, "di", pages);
-      const data = await postSystemOne(apiKey, fit.body, "selezione");
-      if (data.model) console.info("[a11y-nav] modello Jev:", data.model);
-      if (data.usage) console.info("[a11y-nav] utilizzo Jev:", JSON.stringify(data.usage));
-      result = parseSelectionAnswers(data);
-    } catch (error) {
-      console.error("Errore TypeSafe Jev:", error);
-      continue;
-    }
-    const decision = result.decision;
-    console.info("[a11y-nav] risposta Jev pagina", page + 1, ":", decision?.choice, "qualità:", result.quality, "confidenza:", result.confidence, "chiara:", result.isClear);
-    if (decision && decision.choice === "zz-none") {
-      sawNotFound = true;
-      continue;
-    }
-    if (!decision || !decision.choice || !fit.links.some(el => el.id === decision.choice)) continue;
-    const pick = fit.links.find(el => el.id === decision.choice);
-    const gatesPass = result.quality !== null && result.quality >= MIN_MATCH_QUALITY && (result.isClear === null || result.isClear >= MIN_CLEAR_NOUL);
-    const confidentPick = result.confidence !== null && result.confidence >= 0.75 && result.quality !== null && result.quality >= 0.5;
-    if (gatesPass || confidentPick) {
-      console.info("Elemento scelto da TypeSafe Jev:", decision.choice, confidentPick && !gatesPass ? "(alta confidenza)" : "");
-      return { status: "found", targetId: decision.choice };
-    }
-    if (!bestGhost || (result.quality !== null && (bestGhost.quality === null || result.quality > bestGhost.quality))) {
-      bestGhost = { label: pick.t, quality: result.quality };
-    }
-  }
-  if (bestGhost) {
-    console.warn("Corrispondenza ambigua (qualità " + bestGhost.quality + "). Navigazione bloccata.");
-    return { status: "ambiguous", bestLabel: bestGhost.label, quality: bestGhost.quality };
-  }
-  if (sawNotFound) {
-    console.info("[a11y-nav] Jev dichiara nessuna corrispondenza.");
-    return { status: "notfound" };
-  }
-  return { status: "failed" };
 }
 
 async function buildExpansion(userQuery) {
@@ -530,35 +387,6 @@ async function buildExpansion(userQuery) {
     console.info("[a11y-nav] espansione finale:", JSON.stringify(expansion));
   }
   return { expansion: expansion, config: config };
-}
-
-async function handleNavigation(userQuery, elements) {
-  console.info("[a11y-nav] avvio navigazione:", userQuery, "elementi:", elements.length);
-  const built = await buildExpansion(userQuery);
-  const expansion = built.expansion;
-  const config = built.config;
-  const usable = filterLinksForGoal(elements, expansion);
-  if (usable.length !== elements.length) {
-    console.info("[a11y-nav] esclusi", elements.length - usable.length, "link email non pertinenti all'intento:", expansion.intent || "n/d");
-  }
-
-  console.info("[a11y-nav] selezione TypeSafe Jev su", usable.length, "elementi...");
-  const selection = await selectWithSystemOne(config.jevApiKey, expansion, usable);
-  if (selection.status === "found") {
-    return { targetId: selection.targetId, ambiguous: false };
-  }
-  if (selection.status === "ambiguous") {
-    return { targetId: null, ambiguous: true, bestLabel: selection.bestLabel || "", quality: selection.quality ?? null };
-  }
-  if (selection.status === "notfound") {
-    return { targetId: null, notfound: true };
-  }
-
-  const terms = queryTokens(expansion.original);
-  const fallback = usable.find(el => matchVariants(el.t, "", terms.length > 0 ? terms : expansion.variants))
-    || usable.find(el => matchVariants(el.t, "", expansion.variants));
-  console.info(fallback ? "Fallback locale selezionato:" : "Nessun risultato locale per:", fallback ? fallback.id : expansion.variants.join(", "));
-  return { targetId: fallback ? fallback.id : null, ambiguous: false };
 }
 
 const MISSION_STORAGE_KEY = "a11yMission";

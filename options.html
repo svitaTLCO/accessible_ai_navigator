@@ -11,14 +11,23 @@
     <h1>Opzioni del navigatore accessibile</h1>
     <p class="hint">La selezione degli elementi è sempre affidata a TypeSafe Jev. Il secondo blocco, facoltativo, aggiunge un raffinamento della tua frase tramite un endpoint compatibile OpenAI che usi tu.</p>
 
-    <section id="section-jev">
-      <h2>TypeSafe Jev <button id="test-jev-btn" type="button">Prova</button></h2>
+    <section id="section-jev" aria-labelledby="heading-jev">
+      <div class="section-head">
+        <h2 id="heading-jev">TypeSafe Jev</h2>
+        <button id="test-jev-btn" type="button" aria-label="Prova la connessione a TypeSafe Jev">Prova</button>
+      </div>
       <label for="jev-key">Chiave API</label>
       <input type="password" id="jev-key" autocomplete="off" placeholder="Inserisci la chiave TypeSafe">
     </section>
 
-    <section id="section-refiner">
-      <h2>Raffinamento della frase (facoltativo, compatibile OpenAI) <button id="test-llm-btn" type="button">Prova</button> <button id="detect-llm-btn" type="button">Rileva modelli</button></h2>
+    <section id="section-refiner" aria-labelledby="heading-refiner">
+      <div class="section-head">
+        <h2 id="heading-refiner">Raffinamento della frase (facoltativo, compatibile OpenAI)</h2>
+        <div class="section-actions">
+          <button id="test-llm-btn" type="button" aria-label="Prova la connessione al servizio di raffinamento">Prova</button>
+          <button id="detect-llm-btn" type="button" aria-label="Rileva i modelli disponibili sull'endpoint">Rileva modelli</button>
+        </div>
+      </div>
       <p class="hint">Se compilato, riformula la frase digitata in una parola chiave prima della selezione. Il modello è facoltativo: se lo lasci vuoto, l'estensione chiede all'endpoint quali modelli offre e usa il primo disponibile. Se il browser mette a disposizione il modello locale, quello ha priorità e questo servizio non viene chiamato.</p>
       <label for="custom-url">URL di base</label>
       <input type="text" id="custom-url" placeholder="https://api.example.com/v1">
@@ -33,7 +42,7 @@
       <button id="save-btn" type="button">Salva</button>
       <button id="reset-btn" type="button">Ripristina predefiniti</button>
     </div>
-    <p id="status" role="status" aria-live="polite"></p>
+    <p id="status" role="status" aria-live="polite" aria-atomic="true"></p>
   </main>
   <script src="options.js"></script>
 </body>

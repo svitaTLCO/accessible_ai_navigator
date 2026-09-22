@@ -48,7 +48,7 @@ globalThis.chrome = {
 };
 
 const src = fs.readFileSync(resolve(ROOT, "background.js"), "utf8");
-vm.runInThisContext(src + "\nglobalThis.__bg = { handleBrowse, handleNavigation, clearMission, buildExpansion };", { filename: "background.js" });
+vm.runInThisContext(src + "\nglobalThis.__bg = { handleBrowse, clearMission, buildExpansion };", { filename: "background.js" });
 const bg = globalThis.__bg;
 const defaultBuildExpansion = bg.buildExpansion;
 

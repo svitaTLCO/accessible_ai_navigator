@@ -1,118 +1,73 @@
 let overlay = null;
 let missionTimer = null;
+let returnFocusEl = null;
 
-function removeOverlay() {
+const prefersReducedMotion = () =>
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function scrollBehavior() {
+  return prefersReducedMotion() ? 'auto' : 'smooth';
+}
+
+function overlayEscHandler(e) {
+  if (e.key === 'Escape') {
+    stopMission(true);
+    removeOverlay(true);
+  }
+}
+
+function removeOverlay(restoreFocus = false) {
   if (missionTimer) { clearTimeout(missionTimer); missionTimer = null; }
+  document.removeEventListener('keydown', overlayEscHandler);
   if (overlay) { overlay.remove(); overlay = null; }
+  if (restoreFocus && returnFocusEl && document.contains(returnFocusEl) && typeof returnFocusEl.focus === 'function') {
+    try {
+      returnFocusEl.focus({ preventScroll: true });
+    } catch (error) {
+      console.warn("[a11y-nav] ripristino del fuoco non riuscito.", error);
+    }
+  }
+  returnFocusEl = null;
 }
 
 function createAccessibleInput() {
-  if (overlay) { removeOverlay(); return; }
+  if (overlay) { removeOverlay(true); return; }
+
+  returnFocusEl = document.activeElement;
 
   overlay = document.createElement('div');
   overlay.id = "a11y-nav-overlay";
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-label', 'Navigazione rapida assistita da AI');
+  overlay.setAttribute('aria-describedby', 'a11y-nav-help');
+  overlay.lang = 'it';
 
   overlay.innerHTML = `
     <div class="a11y-container">
-      <label id="nav-label" for="a11y-nav-input" class="sr-only">Scrivi la destinazione (es. carrello, contatti):</label>
-      <input type="text" id="a11y-nav-input" aria-labelledby="nav-label" placeholder="Dove vuoi andare?" autocomplete="off" />
+      <label id="nav-label" for="a11y-nav-input">Scrivi la destinazione (es. carrello, contatti):</label>
+      <input type="text" id="a11y-nav-input" placeholder="Dove vuoi andare?" autocomplete="off" />
       <div class="a11y-actions">
-        <button id="a11y-go-btn" type="button">Vai nella pagina</button>
         <button id="a11y-browse-btn" type="button">Naviga nel sito</button>
       </div>
-      <div id="a11y-status" role="status" aria-live="polite"></div>
+      <p id="a11y-nav-help" class="sr-only">Premi Invio per avviare l'esplorazione; Esc per chiudere. Scorciatoia da tastiera: Ctrl più Shift più Y, su Mac Command più Shift più Y.</p>
+      <div id="a11y-status" role="status" aria-live="polite" aria-atomic="true"></div>
     </div>
   `;
   document.body.appendChild(overlay);
+  document.addEventListener('keydown', overlayEscHandler);
 
   const input = document.getElementById('a11y-nav-input');
   const status = document.getElementById('a11y-status');
   input.focus();
 
-  input.addEventListener('keydown', async (e) => {
-    if (e.key === 'Escape') { stopMission(true); removeOverlay(); }
+  input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && input.value.trim() !== '') {
-      runOneShot(input.value, status);
+      startMission(input.value, status);
     }
-  });
-  document.getElementById('a11y-go-btn').addEventListener('click', () => {
-    if (input.value.trim() !== '') runOneShot(input.value, status);
   });
   document.getElementById('a11y-browse-btn').addEventListener('click', () => {
     if (input.value.trim() !== '') startMission(input.value, status);
-  });
-}
-
-const CONTACT_QUERY_RE = /(contatt|scriv|email|e-mail|\bmail\b|telefon|chiam|assistenz|support|preventiv|parlar|operatore|consulenz)/i;
-
-function queryLooksLikeContact(query) {
-  return CONTACT_QUERY_RE.test(query || "");
-}
-
-function runOneShot(query, status, doneLabel) {
-  status.textContent = "Analisi della pagina...";
-  console.info("[a11y-nav] invio query:", query);
-
-  const optimizedElements = getOptimizedAccessibilityNodes(query);
-  console.info("[a11y-nav] elementi raccolti:", optimizedElements.length);
-
-  if (optimizedElements.length === 0) {
-    status.textContent = "Nessun elemento interattivo trovato.";
-    return;
-  }
-
-  let answered = false;
-  const watchdog = setTimeout(() => {
-    if (!answered) {
-      status.textContent = "Ancora in attesa... apri chrome://extensions > Service worker per i log.";
-      console.warn("[a11y-nav] nessuna risposta dopo 15s, attendo ancora.");
-    }
-  }, 15000);
-
-  chrome.runtime.sendMessage({ action: "navigate_to_point", query, elements: optimizedElements }, (response) => {
-    answered = true;
-    clearTimeout(watchdog);
-    console.info("[a11y-nav] risposta ricevuta:", response, "errore:", chrome.runtime.lastError?.message);
-    if (chrome.runtime.lastError) {
-      status.textContent = "Errore estensione: ricarica la pagina e riprova.";
-      return;
-    }
-    if (!response) {
-      status.textContent = "Nessuna risposta dal servizio. Ricarica l'estensione.";
-      return;
-    }
-    if (response && response.success && response.targetId) {
-      const targetElement = document.querySelector(`[data-a11y-id="${response.targetId}"]`);
-      if (targetElement) {
-        const href = targetElement.getAttribute && targetElement.getAttribute('href');
-        if (href && /^mailto:/i.test(href)) {
-          if (!queryLooksLikeContact(query)) {
-            status.textContent = "Link email ignorato: la richiesta non chiede di contattare.";
-            return;
-          }
-          status.textContent = `Apro il programma email.`;
-          if (targetElement.click) targetElement.click();
-          setTimeout(() => removeOverlay(), 1200);
-        } else {
-          status.textContent = doneLabel || `Navigato su elemento.`;
-          targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          targetElement.focus();
-          setTimeout(() => removeOverlay(), 1200);
-        }
-      } else {
-        status.textContent = "Elemento non raggiungibile.";
-      }
-    } else if (response && !response.success) {
-      if (response.reason === "ambiguous") {
-        status.textContent = response.bestLabel
-          ? `Corrispondenza ambigua (migliore: ${response.bestLabel}). Prova una descrizione più precisa.`
-          : "Corrispondenza ambigua: prova una descrizione più precisa.";
-      } else {
-        status.textContent = "Destinazione non trovata.";
-      }
-    }
   });
 }
 
@@ -372,17 +327,19 @@ function focusPageDestination(step) {
   if (target) {
     if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
     try {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      target.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
       target.focus({ preventScroll: true });
     } catch (error) {
       console.warn("[a11y-nav] messa a fuoco della destinazione non riuscita.", error);
     }
   }
-  const status = document.getElementById('a11y-status');
-  if (status) {
-    const title = (document.title || '').trim();
-    status.textContent = title ? `Destinazione raggiunta al passo ${step}: ${title}.` : `Destinazione raggiunta al passo ${step}.`;
-  }
+  const title = (document.title || '').trim();
+  setTimeout(() => {
+    const status = document.getElementById('a11y-status');
+    if (status) {
+      status.textContent = title ? `Destinazione raggiunta al passo ${step}: ${title}.` : `Destinazione raggiunta al passo ${step}.`;
+    }
+  }, 0);
   setTimeout(() => removeOverlay(), 3000);
 }
 
@@ -600,31 +557,48 @@ function startMission(query, status) {
 }
 
 function continueMission(mission) {
-  showMissionBar(`Passo ${mission.step} · ${mission.original} <button id="a11y-stop-btn" type="button">Interrompi</button><div id="a11y-status" role="status" aria-live="polite">Continuo l'esplorazione...</div>`);
+  showMissionBar(`Passo ${mission.step} · ${mission.original}. Continuo l'esplorazione...`);
   if (missionTimer) clearTimeout(missionTimer);
   missionTimer = setTimeout(() => {
     sendBrowseStep();
   }, 900);
 }
 
-function showMissionBar(html) {
-  removeOverlay();
+function ensureMissionOverlay() {
+  if (overlay) return false;
   overlay = document.createElement('div');
   overlay.id = "a11y-nav-overlay";
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-label', 'Esplorazione assistita da AI in corso');
-  overlay.innerHTML = `<div class="a11y-container"><div id="a11y-mission">${html}</div></div>`;
+  overlay.lang = 'it';
+  overlay.dataset.mode = 'mission';
+  overlay.innerHTML = `
+    <div class="a11y-container">
+      <div id="a11y-status" role="status" aria-live="polite" aria-atomic="true"></div>
+      <button id="a11y-stop-btn" type="button">Interrompi</button>
+    </div>
+  `;
   document.body.appendChild(overlay);
   const stopBtn = document.getElementById('a11y-stop-btn');
-  if (stopBtn) stopBtn.addEventListener('click', () => { stopMission(true); removeOverlay(); });
-  document.addEventListener('keydown', missionEscHandler);
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => { stopMission(true); removeOverlay(true); });
+    stopBtn.focus();
+  }
+  document.addEventListener('keydown', overlayEscHandler);
+  return true;
 }
 
-function missionEscHandler(e) {
-  if (e.key === 'Escape') {
-    stopMission(true);
+function showMissionBar(message) {
+  if (overlay && overlay.dataset.mode !== 'mission') {
     removeOverlay();
-    document.removeEventListener('keydown', missionEscHandler);
+  }
+  const created = ensureMissionOverlay();
+  const status = document.getElementById('a11y-status');
+  if (!status) return;
+  if (created) {
+    setTimeout(() => { status.textContent = message || ''; }, 0);
+  } else {
+    status.textContent = message || '';
   }
 }
 
@@ -646,17 +620,17 @@ function handleBrowseResponse(response) {
     return;
   }
   if (response.status === "search") {
-    showMissionBar(`Passo ${response.step} · pagina sterile, cerco sul web... <button id="a11y-stop-btn" type="button">Interrompi</button>`);
+    showMissionBar(`Passo ${response.step} · pagina sterile, cerco sul web...`);
     setTimeout(() => { location.href = response.href; }, 800);
     return;
   }
   if (response.status === "goto") {
     const alt = typeof response.alternatives === "number" && response.alternatives > 0 ? ` (${response.alternatives} alternative)` : "";
     const vars = Array.isArray(response.variants) && response.variants.length > 0 ? ` Cerco anche: ${response.variants.join(", ")}.` : "";
-    showMissionBar(`Passo ${response.step} · vado a "${response.label}"${alt}.${vars} <button id="a11y-stop-btn" type="button">Interrompi</button>`);
+    showMissionBar(`Passo ${response.step} · vado a "${response.label}"${alt}.${vars}`);
     setTimeout(() => {
       const target = document.querySelector(`[data-a11y-id="${response.linkId}"]`);
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (target) target.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
       if (response.href && !/^mailto:/i.test(response.href)) {
         console.info("[a11y-nav] navigo direttamente a", response.href);
         location.href = response.href;
@@ -677,18 +651,18 @@ function handleBrowseResponse(response) {
     return;
   }
   if (response.status === "scroll_down" || response.status === "scroll_up") {
-    showMissionBar(`Passo ${response.step} · scorro la pagina... <button id="a11y-stop-btn" type="button">Interrompi</button>`);
-    window.scrollBy({ top: response.status === "scroll_down" ? 560 : -560, behavior: 'smooth' });
+    showMissionBar(`Passo ${response.step} · scorro la pagina...`);
+    window.scrollBy({ top: response.status === "scroll_down" ? 560 : -560, behavior: scrollBehavior() });
     setTimeout(() => sendBrowseStep(), 900);
     return;
   }
   if (response.status === "wait") {
-    showMissionBar(`Passo ${response.step} · attendo il caricamento... <button id="a11y-stop-btn" type="button">Interrompi</button>`);
+    showMissionBar(`Passo ${response.step} · attendo il caricamento...`);
     setTimeout(() => sendBrowseStep(), 2000);
     return;
   }
   if (response.status === "search_site") {
-    showMissionBar(`Passo ${response.step} · uso la ricerca del sito... <button id="a11y-stop-btn" type="button">Interrompi</button>`);
+    showMissionBar(`Passo ${response.step} · uso la ricerca del sito...`);
     setTimeout(() => {
       const input = document.querySelector(`[data-a11y-id="${response.inputId}"]`);
       if (!input) {
@@ -725,7 +699,7 @@ function handleBrowseResponse(response) {
   }
   if (response.status === "pinpoint") {
     stopMission(false);
-    showMissionBar(`Destinazione trovata al passo ${response.step}.<div id="a11y-status" role="status"></div>`);
+    showMissionBar(`Destinazione trovata al passo ${response.step}.`);
     focusPageDestination(response.step);
     return;
   }
@@ -769,15 +743,6 @@ function scoreCandidate(text, tokens, fullQuery) {
   return score;
 }
 
-function rankNodesByQuery(nodes, query) {
-  const tokens = queryTokens(query);
-  if (tokens.length === 0) return nodes;
-  return nodes
-    .map((n, i) => ({ n: n, i: i, s: scoreCandidate(n.t, tokens, query) }))
-    .sort((a, b) => (b.s - a.s) || (a.i - b.i))
-    .map(e => e.n);
-}
-
 function rankLinksByQuery(nodes, query) {
   const tokens = queryTokens(query);
   if (tokens.length === 0) return nodes;
@@ -788,61 +753,6 @@ function rankLinksByQuery(nodes, query) {
     })
     .sort((a, b) => (b.s - a.s) || (a.i - b.i))
     .map(e => e.n);
-}
-
-function getOptimizedAccessibilityNodes(query) {
-  const rawElements = document.querySelectorAll(
-    'a, button, input, select, textarea, h1, h2, h3, [role], [tabindex="0"], main, nav, header, footer, section'
-  );
-
-  const nodes = [];
-
-  rawElements.forEach((el) => {
-    const rect = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    if (
-      style.display === 'none' ||
-      style.visibility === 'hidden' ||
-      style.opacity === '0' ||
-      (rect.width === 0 && rect.height === 0) ||
-      el.hasAttribute('aria-hidden')
-    ) {
-      return;
-    }
-
-    let accessibleName = (
-      el.getAttribute('aria-label') ||
-      el.innerText ||
-      el.getAttribute('placeholder') ||
-      el.getAttribute('title') ||
-      extraName(el) ||
-      shareName(el) ||
-      ''
-    ).trim().replace(/\s+/g, ' ');
-
-    if (!accessibleName && el.tagName !== 'INPUT') return;
-
-    let role = el.getAttribute('role') || el.tagName.toLowerCase();
-    if (['h1', 'h2', 'h3'].includes(role)) role = 'heading';
-
-    nodes.push({
-      el: el,
-      r: role,
-      t: accessibleName,
-      h: el.tagName === 'A' ? (el.getAttribute('href') || '') : '',
-      zone: zoneOf(el),
-      heading: sectionHeading(el)
-    });
-  });
-
-  const ranked = rankNodesByQuery(nodes, query);
-  let nodeCounter = 0;
-  return ranked.map((n) => {
-    if (!n.el.getAttribute('data-a11y-id')) {
-      n.el.setAttribute('data-a11y-id', `p-${nodeCounter++}`);
-    }
-    return { id: n.el.getAttribute('data-a11y-id'), r: n.r, t: n.t, h: n.h, zone: n.zone, heading: n.heading };
-  });
 }
 
 chrome.runtime.onMessage.addListener((request) => {

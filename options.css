@@ -24,16 +24,27 @@ h1 {
 
 h2 {
   font-size: 18px;
-  border-bottom: 2px solid #FFFF00;
-  padding-bottom: 6px;
+  margin: 0;
+}
+
+.section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
+  border-bottom: 2px solid #FFFF00;
+  padding-bottom: 6px;
 }
 
-h2 button {
+.section-actions {
+  display: flex;
   flex: none;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.section-actions button {
   padding: 6px 12px;
   font-size: 14px;
 }
@@ -85,6 +96,16 @@ button {
 
 button:hover {
   background-color: #E6D200;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid #FFFFFF;
+  outline-offset: 2px;
+}
+
+::placeholder {
+  color: #4A4A4A;
 }
 
 #status {

@@ -2,158 +2,153 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4.svg)](manifest.json)
-[![No build step](https://img.shields.io/badge/build-none-success.svg)](#development)
+[![No build step](https://img.shields.io/badge/build-none-success.svg)](#sviluppo)
 
-A Chrome (Manifest V3) extension that lets you navigate a website in plain language and land on the right element or page. Built for people who use screen readers and keyboard navigation on sites whose structure is hard to traverse.
+Estensione Chrome (Manifest V3) che consente di navigare un sito web in linguaggio naturale e di atterrare sulla pagina giusta. Pensata per chi usa screen reader e navigazione da tastiera su siti la cui struttura è difficile da attraversare.
 
-Describe a destination — *"the contact form"*, *"the VoIP switchboard page"*, *"opening times"* — and the extension either focuses the matching element on the current page, or walks the site link by link until it reaches the target page and announces it.
+Descrivi una destinazione — *"il modulo contatti"*, *"la pagina del centralino VoIP"*, *"orari di apertura"* — e l'estensione esplora il sito collegamento per collegamento finché raggiunge la pagina di destinazione e la annuncia.
 
-The product UI is in Italian; the code and this document are in English.
+L'interfaccia del prodotto è in italiano; il codice in inglese. Questo documento è disponibile in **italiano** e in [inglese](README.en.md).
 
 ---
 
-## Contents
+## Indice
 
-- [Overview](#overview)
-- [Features](#features)
-- [How it works](#how-it-works)
-- [Permissions & privacy](#permissions--privacy)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Configure](#configure)
-- [Usage](#usage)
+- [Panoramica](#panoramica)
+- [Funzionalità](#funzionalità)
+- [Come funziona](#come-funziona)
+- [Permessi e privacy](#permessi-e-privacy)
+- [Requisiti](#requisiti)
+- [Installazione](#installazione)
+- [Configurazione](#configurazione)
+- [Uso](#uso)
 - [Benchmark](#benchmark)
-- [Project structure](#project-structure)
-- [Development](#development)
-- [Contributing](#contributing)
-- [License](#license)
+- [Struttura del progetto](#struttura-del-progetto)
+- [Sviluppo](#sviluppo)
+- [Contribuire](#contribuire)
+- [Licenza](#licenza)
 
 ---
 
-## Overview
+## Panoramica
 
-The extension drives a decision model — [TypeSafe System One ("Jev")](https://docs.typesafe.ai) — that answers **typed questions** over a structured description of the page. There is no free-form generation to parse: every answer is a choice, a score, or a calibrated probability, and **all control flow stays in code**.
+L'estensione guida un modello decisionale — [TypeSafe System One ("Jev")](https://docs.typesafe.ai) — che risponde a **domande tipizzate** su una descrizione strutturata della pagina. Non c'è generazione libera da interpretare: ogni risposta è una scelta, un punteggio o una probabilità calibrata, e **tutta la logica di controllo resta nel codice**.
 
-Two modes:
+Partendo dalla pagina corrente, la missione **Naviga nel sito** è multi-passo: a ogni passo decide se cliccare un collegamento, scorrere, attendere, usare la ricerca interna del sito o fermarsi.
 
-| Mode | Button | What it does |
-|---|---|---|
-| One-shot | **Vai nella pagina** | Finds and focuses the best element on the current page. |
-| Browse | **Naviga nel sito** | Multi-step: decides at every step whether to click a link, scroll, wait, use the site's own search, or stop. |
+## Funzionalità
 
-## Features
+- **Navigazione in linguaggio naturale** — descrivi la destinazione e la missione percorre il sito fino a raggiungerla, partendo dalla pagina in cui ti trovi.
+- **Navigazione nello stesso sito** — la missione fissa il dominio di partenza e non devia mai verso fornitori esterni collegati.
+- **Consapevole della ricerca del sito** — quando un sito ha un campo di ricerca proprio, l'agente può digitare la richiesta e inviarla.
+- **Navigazione resiliente** — clic sintetico con fallback di navigazione diretta; i collegamenti a file statici vengono saltati; i vicoli ciechi tornano alla migliore alternativa invece di fallire.
+- **Ancoraggio semantico** — i collegamenti portano con sé la regione (`menu`, `testata`, `contenuto`, …), l'intestazione di sezione più vicina e il contesto di riga, così i collegamenti generici e quelli solo icona restano distinguibili.
+- **Ranking comprensibile** — i candidati vengono riordinati nel codice in base ai termini *essenziali* della richiesta su testo + intestazione + contesto, pesati per regione.
+- **Filtro di pertinenza** — una pagina fuori tema (o un bersaglio incerto) non viene cliccata; dopo alcuni passi sterili la missione termina con *"Nessuna pagina pertinente trovata"* invece di vagare.
+- **Interfaccia accessibile prima di tutto** — overlay ad alto contrasto, stato ARIA live persistente annunciato a ogni passo, focus spostato sul controllo di arresto e ripristinato alla chiusura, Esc per fermarsi da qualsiasi punto, `lang="it"` sull'interfaccia, etichette visibili e indicatori di focus, scorrimento fluido che rispetta `prefers-reduced-motion`.
+- **Nessun parametro di tracciamento** negli URL che segue.
 
-- **Natural-language targeting** on the current page (buttons, links, fields, headings).
-- **Same-site browsing** — the mission pins the starting domain and never drifts to external vendors.
-- **Site search aware** — when a site has its own search box, the agent can type the request and submit it.
-- **Resilient navigation** — synthetic click with a direct-navigation fallback; static-file links are skipped; dead ends backtrack to the best alternative instead of failing.
-- **Semantic grounding** — links carry their region (`menu`, `testata`, `contenuto`, …), the nearest section heading, and row context, so generic and icon-only links stay distinguishable.
-- **Ranking you can reason about** — candidates are re-ranked in code by the query's *essential* terms over text + heading + context, weighted by region.
-- **Relevance gate** — an off-topic page (or an unsure target) is not clicked; after a few sterile steps the mission ends with *"Nessuna pagina pertinente trovata"* instead of wandering.
-- **Accessibility-first UI** — high-contrast overlay, ARIA live status, full keyboard control, Esc to stop.
-- **No tracking parameters** in the URLs it follows.
-
-## How it works
+## Come funziona
 
 ```
-keyboard shortcut ──▶ content.js: collect page model ──▶ background.js
-                                                            │  expand query (intent, essentials, variants)
-                                                            │  1 request to Jev:  operation · click_target · section
+scorciatoia da tastiera ──▶ content.js: costruisce il modello pagina ──▶ background.js
+                                                            │  espande la richiesta (intento, essenziali, varianti)
+                                                            │  1 richiesta a Jev:  operation · click_target · section
                                                             │                      done · done_page · error
                                                             │                      relevance · on_topic
                                                             ▼
-                                            code decides (gates, ranking, frontier, backtrack)
+                                            il codice decide (filtri, ranking, frontier, backtrack)
                                                             ▼
-                                     content.js: click / scroll / search / focus page heading
+                                     content.js: clic / scorrimento / ricerca / focus sull'intestazione
 ```
 
-- `content.js` builds a compact model of the page (visible links with region, section heading and row context; main text; open dialogs; site search field) and stamps elements with `data-a11y-id`.
-- `background.js` runs one System One request per step, batches many atomic questions into it, and composes the typed answers with deterministic rules. Selection is delegated to Jev; everything else — timing, limits, safety gates, loop guards — is code.
-- The browse mission lives in `chrome.storage.session` (never synced) and is cleared on stop / done / stuck.
+- `content.js` costruisce un modello compatto della pagina (collegamenti visibili con regione, intestazione di sezione e contesto di riga; testo principale; dialoghi aperti; campo di ricerca del sito) e contrassegna gli elementi con `data-a11y-id`.
+- `background.js` esegue una richiesta System One per passo, raggruppa molte domande atomiche in essa e compone le risposte tipizzate con regole deterministiche. La selezione è delegata a Jev; tutto il resto — tempi, limiti, filtri di sicurezza, protezioni dal loop — è codice.
+- La missione vive in `chrome.storage.session` (mai sincronizzata) e viene cancellata a stop / done / stuck.
 
-## Permissions & privacy
+## Permessi e privacy
 
-The manifest requests **no `permissions` entry**.
+Il manifest non richiede **nessuna voce `permissions`**.
 
-| Scope | Value | Why |
+| Ambito | Valore | Perché |
 |---|---|---|
-| `host_permissions` | `https://api.typesafe.ai/*` | The selection engine. |
-| `host_permissions` | `https://api.openai.com/*` | Only if you configure it as the optional phrase refiner. |
-| `optional_host_permissions` | `https://*/*` | Requested at save-time, narrowed to the exact host you type, only for a custom refiner endpoint. |
+| `host_permissions` | `https://api.typesafe.ai/*` | Il motore di selezione. |
+| `host_permissions` | `https://api.openai.com/*` | Solo se lo configuri come raffinatore di frase facoltativo. |
+| `optional_host_permissions` | `https://*/*` | Richiesto al salvataggio, limitato all'host esatto che digiti, solo per un endpoint di raffinamento personalizzato. |
 
-Data flow:
+Flusso dei dati:
 
-- The typed phrase and the **visible page texts/links** (ranked by relevance) are sent to the selection engine to choose the element/link.
-- If the page offers a **site search**, the extension may type your request into that field and submit it — in that case the request goes to the visited website, exactly as if you had typed it.
-- If you configure an **optional refiner** (OpenAI-compatible), the typed phrase may also be sent there first.
-- The mission (goal, step, visited pages) stays in the browser session only and is deleted when the mission ends.
-- API keys are entered in the options page and stored only in `chrome.storage.local` of your browser profile — never synced, never logged, never sent to content scripts.
-- Where the browser supports it, part of the query expansion runs **on-device** (`LanguageModel` / `aiLanguageModel`).
+- La frase digitata e i **testi/collegamenti visibili della pagina** (ordinati per pertinenza) vengono inviati al motore di selezione per scegliere il collegamento.
+- Se la pagina offre una **ricerca interna**, l'estensione può digitare la tua richiesta in quel campo e inviarla — in quel caso la richiesta va al sito visitato, esattamente come se l'avessi digitata tu.
+- Se configuri un **raffinatore facoltativo** (compatibile OpenAI), la frase digitata può esservi inviata prima.
+- La missione (obiettivo, passo, pagine visitate) resta solo nella sessione del browser e viene eliminata quando la missione termina.
+- Le chiavi API si inseriscono nella pagina delle opzioni e sono salvate solo in `chrome.storage.local` del tuo profilo browser — mai sincronizzate, mai registrate nei log, mai inviate agli script di contenuto.
+- Dove il browser lo supporta, parte dell'espansione della richiesta avviene **sul dispositivo** (`LanguageModel` / `aiLanguageModel`).
 
-## Requirements
+## Requisiti
 
-- Chrome (or a Chromium-based browser) with Manifest V3 and, for multi-step browsing, `chrome.storage.session` access to content scripts.
-- A TypeSafe Jev API key (for the selection engine). The on-device model and the optional refiner are fallbacks, not requirements.
-- No build step, no dependencies.
+- Chrome (o un browser basato su Chromium) con Manifest V3 e, per la navigazione multi-passo, accesso a `chrome.storage.session` dagli script di contenuto.
+- Una chiave API TypeSafe Jev (per il motore di selezione). Il modello sul dispositivo e il raffinatore facoltativo sono fallback, non requisiti.
+- Nessuna build, nessuna dipendenza.
 
-## Install
+## Installazione
 
-1. Clone the repository.
-2. Open `chrome://extensions`.
-3. Enable **Developer mode**.
-4. Click **Load unpacked** and select the repository folder.
-5. After editing files, press **Reload** on the extension card; content-script changes also require reloading the target page.
+1. Clona il repository.
+2. Apri `chrome://extensions`.
+3. Attiva la **Modalità sviluppatore**.
+4. Clicca **Carica estensione non pacchettizzata** e seleziona la cartella del repository.
+5. Dopo aver modificato i file, premi **Ricarica** sulla scheda dell'estensione; le modifiche agli script di contenuto richiedono anche il ricaricamento della pagina di destinazione.
 
-## Configure
+## Configurazione
 
-Open the extension's **Options** page:
+Apri la pagina **Opzioni** dell'estensione:
 
-- **TypeSafe Jev API key** — required for navigation.
-- **Optional refiner** — an OpenAI-compatible endpoint (base URL + key, model optional with auto-detection via `GET /models`) used only to rewrite the phrase before selection.
+- **Chiave API TypeSafe Jev** — necessaria per la navigazione.
+- **Raffinatore facoltativo** — un endpoint compatibile OpenAI (URL di base + chiave, modello facoltativo con rilevamento automatico tramite `GET /models`) usato solo per riscrivere la frase prima della selezione.
 
-## Usage
+## Uso
 
-- Press **Ctrl+Shift+Y** (**Cmd+Shift+Y** on macOS) to open the navigation bar.
-- Type the destination and press **Enter** for a one-shot, or click **Naviga nel sito** for multi-step browsing.
-- **Esc** or **Interrompi** stops a mission.
+- Premi **Ctrl+Shift+Y** (**Cmd+Shift+Y** su macOS) per aprire la barra di navigazione.
+- Digita la destinazione e premi **Invio**, oppure clicca **Naviga nel sito**, per avviare la missione di navigazione multi-passo.
+- **Esc** o **Interrompi** ferma una missione.
 
 ## Benchmark
 
-A standalone, dependency-free benchmark drives the real `background.js` against **live, complex public sites** with ground-truth URL checks, in difficulty tiers 1 → 5.
+Un benchmark autonomo e senza dipendenze pilota il vero `background.js` contro **siti pubblici complessi e dal vivo** con verifiche dell'URL atteso, in livelli di difficoltà da 1 a 5.
 
 ```bash
-node bench/run.mjs               # all tiers
-node bench/run.mjs --tier 4      # one difficulty tier
-node bench/run.mjs --only R5,R8  # specific tasks
+node bench/run.mjs               # tutti i livelli
+node bench/run.mjs --tier 4      # un livello di difficoltà
+node bench/run.mjs --only R5,R8  # attività specifiche
 ```
 
-The Jev key is read from `TYPESAFE_API_KEY` or, on macOS, from the Keychain (`typesafe-api-key`). Live sites change, so a failure may be the site rather than the agent — every line prints the URL actually reached.
+La chiave Jev si legge da `TYPESAFE_API_KEY` o, su macOS, dal Portachiavi (`typesafe-api-key`). I siti dal vivo cambiano, quindi un fallimento può dipendere dal sito più che dall'agente — ogni riga stampa l'URL effettivamente raggiunto.
 
-Current score: **12/12** across MDN, python.org, mozilla.org, gnu.org, Wikipedia and books.toscrape, including off-site, mailto and tracking-parameter guards.
+Punteggio attuale: **12/12** su MDN, python.org, mozilla.org, gnu.org, Wikipedia e books.toscrape, incluse le protezioni per fuori sito, mailto e parametri di tracciamento.
 
-## Project structure
+## Struttura del progetto
 
 ```
-manifest.json      MV3 manifest
-background.js      service worker: query expansion, Jev calls, one-shot + browse loop
-content.js         page model, overlay UI, actions (click / scroll / search / focus)
-options.html/.js/.css  options page (Jev key, optional refiner)
-styles.css         high-contrast overlay styling
-bench/             live-site benchmark (run.mjs) and tasks (tasks.mjs)
-AGENTS.md          architecture notes for contributors/agents
+manifest.json      manifest MV3
+background.js      service worker: espansione della richiesta, chiamate a Jev, loop di navigazione
+content.js         modello pagina, interfaccia overlay, azioni (clic / scorrimento / ricerca / focus)
+options.html/.js/.css  pagina delle opzioni (chiave Jev, raffinatore facoltativo)
+styles.css         stile dell'overlay ad alto contrasto
+bench/             benchmark su siti dal vivo (run.mjs) e attività (tasks.mjs)
+AGENTS.md          note di architettura per contributori/agenti
 ```
 
-## Development
+## Sviluppo
 
-- No package manager, no bundler, no lint config: plain JS + CSS loaded directly by Chrome.
-- Keep MV3, `async/await` (no `.then()` chains), minimal permissions, and error handling on every async operation.
-- See **[AGENTS.md](AGENTS.md)** for the full message flow, the relevance gate, caps and invariants.
-- Run the benchmark after changing any browse gate.
+- Nessun gestore di pacchetti, nessun bundler, nessuna configurazione di lint: JS + CSS puri caricati direttamente da Chrome.
+- Mantieni MV3, `async/await` (niente catene `.then()`), permessi minimi e gestione degli errori su ogni operazione asincrona.
+- Vedi **[AGENTS.md](AGENTS.md)** per il flusso completo dei messaggi, il filtro di pertinenza, i limiti e gli invarianti.
+- Esegui il benchmark dopo aver modificato qualsiasi filtro di navigazione.
 
-## Contributing
+## Contribuire
 
-Issues and pull requests are welcome. Please keep changes small and verify them with the benchmark (`node bench/run.mjs`) when they touch navigation behavior.
+Issue e pull request sono benvenute. Mantieni le modifiche piccole e verificale con il benchmark (`node bench/run.mjs`) quando toccano il comportamento di navigazione.
 
-## License
+## Licenza
 
 [MIT](LICENSE).

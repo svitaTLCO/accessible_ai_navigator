@@ -15,6 +15,7 @@
 
 .a11y-container input {
   width: 100%;
+  box-sizing: border-box;
   padding: 12px;
   font-size: 18px;
   background-color: #FFFFFF;
@@ -30,7 +31,7 @@
 }
 
 .a11y-actions button,
-#a11y-mission button {
+#a11y-stop-btn {
   flex: 1;
   padding: 10px;
   font-size: 16px;
@@ -42,16 +43,17 @@
   cursor: pointer;
 }
 
-#a11y-mission {
+#a11y-stop-btn {
+  margin-top: 12px;
+  width: 100%;
+}
+
+#a11y-nav-overlay label {
+  display: block;
+  margin-bottom: 6px;
   font-size: 16px;
   font-weight: bold;
   color: #FFFFFF;
-  background-color: #000000;
-}
-
-#a11y-mission button {
-  margin-top: 12px;
-  width: 100%;
 }
 
 #a11y-status {
@@ -63,6 +65,12 @@
   min-height: 1.2em;
 }
 
+#a11y-nav-overlay button:focus-visible,
+#a11y-nav-overlay input:focus-visible {
+  outline: 3px solid #FFFFFF;
+  outline-offset: 2px;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -71,6 +79,7 @@
   margin: -1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }
