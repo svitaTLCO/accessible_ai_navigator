@@ -42,6 +42,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     })();
     return true;
   }
+  if (request.action === "ask_page") {
+    (async () => {
+      try {
+        sendResponse(await handleAskPage(request));
+      } catch (err) {
+        console.error(err);
+        sendResponse({ status: "error", message: String((err && err.message) || err) });
+      }
+    })();
+    return true;
+  }
+  if (request.action === "browse_back" || request.action === "browse_home" || request.action === "browse_restart") {
+    (async () => {
+      try {
+        sendResponse(await handleMissionNav(request));
+      } catch (err) {
+        console.error(err);
+        sendResponse({ mission: true, status: "stuck", reason: "error", hint: "" });
+      }
+    })();
+    return true;
+  }
 });
 
 const MIN_MATCH_QUALITY = 2;
@@ -82,6 +104,62 @@ function fitBody(build, links, text) {
 }
 
 const CONFIG_STORAGE_KEY = "llmProviderConfig";
+const SHORTCUT_STORAGE_KEY = "a11yShortcuts";
+const SHORTCUT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const SETTINGS_STORAGE_KEY = "a11ySettings";
+
+async function loadSettings() {
+  const defaults = { maxSteps: 0, excludedSites: [] };
+  try {
+    const stored = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
+    const saved = stored[SETTINGS_STORAGE_KEY] || {};
+    const steps = Number(saved.maxSteps);
+    return {
+      maxSteps: Number.isFinite(steps) && steps > 0 ? Math.floor(steps) : 0,
+      excludedSites: Array.isArray(saved.excludedSites)
+        ? saved.excludedSites.map(s => String(s).trim().toLowerCase()).filter(Boolean)
+        : []
+    };
+  } catch (error) {
+    console.warn("[a11y-nav] impostazioni non leggibili.", error);
+    return defaults;
+  }
+}
+
+function shortcutKey(domain, query) {
+  const d = (domain || "").trim().toLowerCase();
+  const q = (query || "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (!d || !q) return "";
+  return d + "|" + q;
+}
+
+async function findShortcut(domain, query) {
+  const key = shortcutKey(domain, query);
+  if (!key) return null;
+  try {
+    const stored = await chrome.storage.local.get(SHORTCUT_STORAGE_KEY);
+    const map = stored[SHORTCUT_STORAGE_KEY] || {};
+    const entry = map[key];
+    if (entry && entry.url && (!entry.ts || Date.now() - entry.ts < SHORTCUT_TTL_MS)) return entry;
+  } catch (error) {
+    console.warn("[a11y-nav] scorciatoie non leggibili.", error);
+  }
+  return null;
+}
+
+async function recordShortcut(domain, query, url, label) {
+  const key = shortcutKey(domain, query);
+  if (!key || !url) return;
+  try {
+    const stored = await chrome.storage.local.get(SHORTCUT_STORAGE_KEY);
+    const map = stored[SHORTCUT_STORAGE_KEY] || {};
+    const existing = map[key] || { hits: 0 };
+    map[key] = { url: url, label: label || existing.label || "", hits: (existing.hits || 0) + 1, ts: Date.now() };
+    await chrome.storage.local.set({ [SHORTCUT_STORAGE_KEY]: map });
+  } catch (error) {
+    console.warn("[a11y-nav] scorciatoia non salvabile.", error);
+  }
+}
 
 async function loadLlmConfig() {
   const defaults = { jevApiKey: "", baseUrl: "", apiKey: "", model: "" };
@@ -354,6 +432,44 @@ async function refineWithCloudLlm(baseUrl, apiKey, model, query) {
   }
 }
 
+async function handleAskPage(request) {
+  const config = await loadLlmConfig();
+  if (!config.baseUrl || !config.apiKey) return { status: "unavailable" };
+  const question = typeof request.question === "string" ? request.question.trim() : "";
+  if (!question) return { status: "error", message: "domanda vuota" };
+  const pageText = typeof request.pageText === "string" ? request.pageText.slice(0, 8000) : "";
+  if (!pageText.trim()) return { status: "error", message: "pagina senza testo" };
+  const model = await resolveRefinerModel(config.baseUrl, config.apiKey, config.model);
+  try {
+    const response = await fetch(config.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
+      method: "POST",
+      signal: AbortSignal.timeout(20000),
+      headers: {
+        "Authorization": `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: model,
+        temperature: 0,
+        messages: [
+          {
+            role: "system",
+            content: "Sei un assistente per persone non vedenti. Rispondi alla domanda dell'utente SOLO usando il testo della pagina fornito. Se la risposta non è nel testo, rispondi esattamente: Non è presente nella pagina. Sii conciso, in italiano, senza aggiungere spiegazioni o codice."
+          },
+          { role: "user", content: `Domanda: ${question}\n\nTesto della pagina:\n${pageText}` }
+        ]
+      })
+    });
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content;
+    return { status: "answer", text: typeof text === "string" ? text.trim() : "" };
+  } catch (error) {
+    console.warn("[a11y-nav] chiedi alla pagina non riuscito.", error);
+    return { status: "error", message: error && error.message ? String(error.message) : "errore di rete" };
+  }
+}
+
 function chunkOf(list, page) {
   return list.slice(page * JEV_MAX_OPTIONS, (page + 1) * JEV_MAX_OPTIONS);
 }
@@ -451,6 +567,39 @@ async function clearMission() {
   } catch (error) {
     console.warn("[a11y-nav] missione non cancellabile.", error);
   }
+}
+
+async function handleMissionNav(request) {
+  const mission = await getMission();
+  if (!mission) return { mission: true, status: "stopped" };
+  if (request.action === "browse_restart") {
+    const original = mission.original || "";
+    await clearMission();
+    return { mission: true, status: "restart", query: original };
+  }
+  if (!Array.isArray(mission.visited)) mission.visited = [];
+  if (request.action === "browse_home") {
+    const target = mission.startUrl || mission.visited[0] || "";
+    if (!target) return { mission: true, status: "stuck", reason: "blocked", hint: "" };
+    mission.stillCount = 0;
+    mission.offTopicStreak = 0;
+    mission.frontier = [];
+    mission.trail.push({ step: mission.step, op: "HOME", target: null, url: target });
+    await saveMission(mission);
+    return { mission: true, status: "goto_back", href: target, label: "pagina iniziale" };
+  }
+  if (mission.visited.length >= 2) {
+    const target = mission.visited[mission.visited.length - 2];
+    mission.visited = mission.visited.slice(0, -1);
+    if (mission.step > 1) mission.step -= 1;
+    mission.stillCount = 0;
+    mission.offTopicStreak = 0;
+    mission.frontier = [];
+    mission.trail.push({ step: mission.step, op: "BACK", target: null, url: target });
+    await saveMission(mission);
+    return { mission: true, status: "goto_back", href: target, label: "pagina precedente" };
+  }
+  return { mission: true, status: "stuck", reason: "blocked", hint: "no_previous" };
 }
 
 const TRACKING_PARAM_PREFIXES = [
@@ -815,28 +964,43 @@ async function handleBrowseInner(request) {
   const rawLinks = Array.isArray(request.links) ? request.links.filter(l => l && typeof l.id === "string" && typeof l.href === "string") : [];
   if (request.action === "browse_start") {
     if (!missionStore()) return { mission: true, status: "stuck", reason: "no_session", hint: "" };
-    if (rawLinks.length === 0) return { mission: true, status: "stuck", reason: "no_links", hint: "" };
     const built = await buildExpansion(request.query || "");
+    const domain = baseDomain(page.url);
+    const settings = await loadSettings();
+    if (domain && settings.excludedSites.includes(domain)) {
+      return { mission: true, status: "stuck", reason: "excluded", hint: domain };
+    }
     const mission = {
       active: true,
       original: request.query || "",
       expansion: built.expansion,
-      site: baseDomain(page.url),
+      site: domain,
+      startUrl: page.url || "",
       jevApiKey: built.config.jevApiKey || "",
+      maxSteps: settings.maxSteps,
       step: 1,
       visited: page.url ? [page.url] : [],
       frontier: [],
       trail: [],
       stillCount: 0,
       offTopicStreak: 0,
-      lastLinks: 0
+      lastLinks: rawLinks.length
     };
+    mission.degraded = !mission.jevApiKey || (typeof navigator !== "undefined" && navigator.onLine === false);
+    if (!mission.degraded) {
+      const shortcut = await findShortcut(domain, request.query || "");
+      if (shortcut) {
+        if (!await saveMission(mission)) return { mission: true, status: "stuck", reason: "no_session", hint: "" };
+        console.info("[a11y-nav] scorciatoia appresa verso", shortcut.url);
+        return { mission: true, status: "goto", step: 1, linkId: "", href: shortcut.url, label: shortcut.label || "pagina appresa", shortcut: true };
+      }
+    }
+    if (rawLinks.length === 0) return { mission: true, status: "stuck", reason: "no_links", hint: "" };
     const links = filterBrowseLinks(rawLinks, mission);
     mission.lastLinks = links.length;
-    if (!mission.jevApiKey) return { mission: true, status: "stuck", reason: "no_key", hint: "" };
     if (links.length === 0) return { mission: true, status: "stuck", reason: "no_links", hint: "" };
     if (!await saveMission(mission)) return { mission: true, status: "stuck", reason: "no_session", hint: "" };
-    console.info("[a11y-nav] missione avviata:", mission.original, "intento:", mission.expansion.intent || "n/d", "sito:", mission.site || "n/d", "link:", links.length);
+    console.info("[a11y-nav] missione avviata:", mission.original, "intento:", mission.expansion.intent || "n/d", "sito:", mission.site || "n/d", "link:", links.length, mission.degraded ? "(modalità ridotta)" : "");
     return await runBrowseStep(mission, links, page);
   }
   const mission = await getMission();
@@ -964,9 +1128,43 @@ function toEntry(pick, step) {
   return { href: pick.href, label: pick.t || pick.href, id: pick.id, score: 0, depth: step };
 }
 
+async function runDegradedStep(mission, links, page) {
+  if (mission.step >= 8) {
+    await clearMission();
+    return { mission: true, status: "stuck", reason: "blocked", hint: "modalità ridotta" };
+  }
+  const candidates = links.filter(l => l.href && !l.email && !mission.visited.includes(l.href));
+  const sorted = candidates.slice().sort((a, b) => scoreLink(b, mission.expansion) - scoreLink(a, mission.expansion));
+  const pick = pickLocalLink(candidates, mission.visited, mission.expansion.variants, goalTerms(mission)) || toEntry(sorted[0] || null, mission.step);
+  if (pick && pick.href) {
+    mission.step += 1;
+    mission.trail.push({ step: mission.step, op: "CLICK", target: pick.id, url: page.url });
+    await saveMission(mission);
+    console.info("[a11y-nav] modalità ridotta: vado a", pick.href);
+    const res = gotoResponse(mission, pick);
+    res.degraded = true;
+    return res;
+  }
+  if (page.canScrollDown || page.canScrollUp) {
+    const dir = page.canScrollDown ? "SCROLL_DOWN" : "SCROLL_UP";
+    mission.step += 1;
+    mission.trail.push({ step: mission.step, op: dir, target: null, url: page.url });
+    await saveMission(mission);
+    return { mission: true, status: dir.toLowerCase(), step: mission.step, degraded: true };
+  }
+  await clearMission();
+  return { mission: true, status: "stuck", reason: "blocked", hint: "modalità ridotta" };
+}
+
 async function runBrowseStep(mission, links, page) {
   console.info("[a11y-nav] passo esplorazione", mission.step, page.url, "frontiera:", Array.isArray(mission.frontier) ? mission.frontier.length : 0);
   if (!Array.isArray(mission.frontier)) mission.frontier = [];
+  if (mission.maxSteps > 0 && mission.step > mission.maxSteps) {
+    await clearMission();
+    console.warn("[a11y-nav] raggiunto il limite di passi configurato.");
+    return { mission: true, status: "stuck", reason: "max_steps", hint: "" };
+  }
+  if (mission.degraded) return await runDegradedStep(mission, links, page);
   const localGoalTerms = goalTerms(mission);
   const result = await decideBrowseStep(mission.jevApiKey, mission, links, page);
   mission.twoStage = result.twoStage === true;
@@ -1023,6 +1221,7 @@ async function runBrowseStep(mission, links, page) {
     if (confirmed !== null && confirmed >= 0.6) {
       mission.trail.push({ step: mission.step, op: "DONE", target: null, url: page.url });
       await saveMission(mission);
+      await recordShortcut(mission.site, mission.original, page.url, page.title);
       console.info("[a11y-nav] destinazione riconosciuta dal contenuto della pagina.");
       return { mission: true, status: "pinpoint", step: mission.step };
     }
@@ -1038,6 +1237,7 @@ async function runBrowseStep(mission, links, page) {
       console.info("[a11y-nav] conferma DONE:", confirmed);
     }
     if (doneScore >= 0.5) {
+      await recordShortcut(mission.site, mission.original, page.url, page.title);
       console.info("[a11y-nav] DONE confermato da Jev. Albero decisioni:", JSON.stringify(mission.trail));
       return { mission: true, status: "pinpoint", step: mission.step };
     }

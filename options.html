@@ -38,6 +38,24 @@
       <datalist id="custom-model-list"></datalist>
     </section>
 
+    <section id="section-behavior" aria-labelledby="heading-behavior">
+      <div class="section-head">
+        <h2 id="heading-behavior">Comportamento</h2>
+      </div>
+      <label for="max-steps">Numero massimo di passi (vuoto = illimitato)</label>
+      <input type="number" id="max-steps" min="1" max="50" placeholder="es. 6">
+      <label for="excluded-sites">Siti esclusi (uno per riga, es. esempio.com)</label>
+      <textarea id="excluded-sites" rows="3" placeholder="esempio.com"></textarea>
+    </section>
+
+    <section id="section-shortcuts" aria-labelledby="heading-shortcuts">
+      <div class="section-head">
+        <h2 id="heading-shortcuts">Scorciatoie apprese</h2>
+        <button id="clear-shortcuts-btn" type="button" aria-label="Cancella le scorciatoie apprese">Cancella</button>
+      </div>
+      <p class="hint">Le destinazioni già raggiunte con successo su un sito vengono ricordate per riproporle al prossimo utilizzo, senza ripetere la ricerca. Restano solo in questo browser.</p>
+    </section>
+
     <div class="actions">
       <button id="save-btn" type="button">Salva</button>
       <button id="reset-btn" type="button">Ripristina predefiniti</button>

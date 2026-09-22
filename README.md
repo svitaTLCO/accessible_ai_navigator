@@ -47,6 +47,11 @@ Partendo dalla pagina corrente, la missione **Naviga nel sito** è multi-passo: 
 - **Filtro di pertinenza** — una pagina fuori tema (o un bersaglio incerto) non viene cliccata; dopo alcuni passi sterili la missione termina con *"Nessuna pagina pertinente trovata"* invece di vagare.
 - **Interfaccia accessibile prima di tutto** — overlay ad alto contrasto, stato ARIA live persistente annunciato a ogni passo, focus spostato sul controllo di arresto e ripristinato alla chiusura, Esc per fermarsi da qualsiasi punto, `lang="it"` sull'interfaccia, etichette visibili e indicatori di focus, scorrimento fluido che rispetta `prefers-reduced-motion`.
 - **Nessun parametro di tracciamento** negli URL che segue.
+- **Azioni rapide deterministiche** — Cerca, Contenuto, Menu, Contatti, Inizio, Fine: salti immediati senza chiamate al modello.
+- **Chiedi alla pagina** — una domanda sul contenuto corrente riceve una risposta dal testo della pagina (richiede l'endpoint compatibile OpenAI configurato).
+- **Controlli di missione** — Indietro (riprende dal passo precedente), All'inizio e Ripeti, oltre a Interrompi.
+- **Continuità sulle SPA** — i cambi di rotta lato client fanno ripartire l'esplorazione senza ricaricare la pagina.
+- **Shadow DOM** — i collegamenti dentro i web component aperti vengono raccolti come gli altri.
 
 ## Come funziona
 
@@ -81,6 +86,7 @@ Flusso dei dati:
 - La frase digitata e i **testi/collegamenti visibili della pagina** (ordinati per pertinenza) vengono inviati al motore di selezione per scegliere il collegamento.
 - Se la pagina offre una **ricerca interna**, l'estensione può digitare la tua richiesta in quel campo e inviarla — in quel caso la richiesta va al sito visitato, esattamente come se l'avessi digitata tu.
 - Se configuri un **raffinatore facoltativo** (compatibile OpenAI), la frase digitata può esservi inviata prima.
+- Usando **Chiedi alla pagina**, il testo principale della pagina corrente e la tua domanda vengono inviati all'endpoint compatibile OpenAI che hai configurato (nessun altro modello è usato per questa funzione). Senza endpoint configurato la funzione resta disattivata.
 - La missione (obiettivo, passo, pagine visitate) resta solo nella sessione del browser e viene eliminata quando la missione termina.
 - Le chiavi API si inseriscono nella pagina delle opzioni e sono salvate solo in `chrome.storage.local` del tuo profilo browser — mai sincronizzate, mai registrate nei log, mai inviate agli script di contenuto.
 - Dove il browser lo supporta, parte dell'espansione della richiesta avviene **sul dispositivo** (`LanguageModel` / `aiLanguageModel`).
@@ -88,7 +94,7 @@ Flusso dei dati:
 ## Requisiti
 
 - Chrome (o un browser basato su Chromium) con Manifest V3 e, per la navigazione multi-passo, accesso a `chrome.storage.session` dagli script di contenuto.
-- Una chiave API TypeSafe Jev (per il motore di selezione). Il modello sul dispositivo e il raffinatore facoltativo sono fallback, non requisiti.
+- Una chiave API TypeSafe Jev per il motore di selezione. Senza chiave (o offline) la missione prosegue in **modalità ridotta** deterministica, scegliendo i collegamenti per punteggio locale; il modello sul dispositivo e il raffinatore facoltativo sono fallback, non requisiti.
 - Nessuna build, nessuna dipendenza.
 
 ## Installazione

@@ -2,6 +2,8 @@ let overlay = null;
 let missionTimer = null;
 let returnFocusEl = null;
 let lastRequestAt = null;
+let missionActive = false;
+let stepInFlight = false;
 
 const A11Y_PERF = false;
 
@@ -61,6 +63,26 @@ function cancelMissionTimer() {
   missionTimer = null;
 }
 
+function onRouteChange() {
+  if (!missionActive || stepInFlight || missionTimer) return;
+  console.info("[a11y-nav] cambio di rotta nella pagina, riprendo l'esplorazione.");
+  missionTimer = settle(() => {
+    if (missionActive && !stepInFlight) sendBrowseStep();
+  }, 1200);
+}
+
+function installRouteObserver() {
+  try {
+    if (window.navigation && typeof window.navigation.addEventListener === 'function') {
+      window.navigation.addEventListener('navigatesuccess', onRouteChange);
+    }
+  } catch (error) {
+    console.warn("[a11y-nav] osservazione delle rotte non disponibile.", error);
+  }
+  window.addEventListener('popstate', onRouteChange);
+  window.addEventListener('hashchange', onRouteChange);
+}
+
 function overlayEscHandler(e) {
   if (e.key === 'Escape') {
     stopMission(true);
@@ -82,6 +104,116 @@ function removeOverlay(restoreFocus = false) {
   returnFocusEl = null;
 }
 
+function firstMatch(selector) {
+  for (const root of getRoots()) {
+    const el = root.querySelector(selector);
+    if (el && !isHidden(el)) return el;
+  }
+  return null;
+}
+
+function focusElement(el) {
+  if (!el) return false;
+  if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
+  try {
+    el.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
+  } catch (error) {
+    console.warn("[a11y-nav] scorrimento rapido non riuscito.", error);
+  }
+  try {
+    el.focus({ preventScroll: true });
+  } catch (error) {
+    console.warn("[a11y-nav] fuoco rapido non riuscito.", error);
+  }
+  return true;
+}
+
+function findContactLink() {
+  const mail = firstMatch('a[href^="mailto:"]');
+  if (mail) return mail;
+  for (const root of getRoots()) {
+    for (const a of root.querySelectorAll('footer a, [role="contentinfo"] a')) {
+      if (/contatt|contact|assistenz|support/i.test(a.innerText || "")) return a;
+    }
+  }
+  return firstMatch('footer a, [role="contentinfo"] a');
+}
+
+function runQuickAction(kind, status) {
+  if (!status) return;
+  clearRoots();
+  if (kind === 'search') {
+    const found = findSiteSearch();
+    status.textContent = found && focusElement(found.input)
+      ? 'Campo di ricerca del sito attivato.'
+      : 'Nessun campo di ricerca trovato in questa pagina.';
+    return;
+  }
+  if (kind === 'content') {
+    const root = mainContentRoot();
+    const target = (root && root.querySelector('h1, h2')) || root;
+    status.textContent = focusElement(target)
+      ? 'Contenuto principale.'
+      : 'Contenuto principale non trovato.';
+    return;
+  }
+  if (kind === 'menu') {
+    status.textContent = focusElement(firstMatch('nav, [role="navigation"]'))
+      ? 'Menu di navigazione.'
+      : 'Menu di navigazione non trovato.';
+    return;
+  }
+  if (kind === 'contacts') {
+    const link = findContactLink();
+    if (link && focusElement(link)) {
+      const label = (link.innerText || link.getAttribute('href') || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+      status.textContent = label ? `Contatti: ${label}.` : 'Link di contatto attivato.';
+    } else {
+      status.textContent = 'Nessun link di contatto trovato.';
+    }
+    return;
+  }
+  if (kind === 'top') {
+    try { window.scrollTo({ top: 0, behavior: scrollBehavior() }); } catch (error) { console.warn("[a11y-nav] scorrimento non riuscito.", error); }
+    status.textContent = 'Inizio della pagina.';
+    return;
+  }
+  if (kind === 'bottom') {
+    try { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: scrollBehavior() }); } catch (error) { console.warn("[a11y-nav] scorrimento non riuscito.", error); }
+    status.textContent = 'Fine della pagina.';
+    return;
+  }
+}
+
+function askPage(question, status) {
+  const q = (question || "").trim();
+  if (!q || !status) return;
+  clearRoots();
+  const pageText = collectPageText();
+  status.textContent = 'Cerco la risposta nella pagina...';
+  chrome.runtime.sendMessage({
+    action: "ask_page",
+    question: q,
+    pageText: pageText,
+    title: document.title,
+    url: stripTracking(location.href)
+  }, (response) => {
+    if (chrome.runtime.lastError || !response) {
+      status.textContent = 'Errore estensione: ricarica la pagina e riprova.';
+      return;
+    }
+    if (response.status === 'unavailable') {
+      status.textContent = 'Per usare "Chiedi alla pagina" configura l\'endpoint compatibile OpenAI nelle Opzioni.';
+      return;
+    }
+    if (response.status === 'answer') {
+      status.textContent = response.text || 'Non è presente nella pagina.';
+      return;
+    }
+    status.textContent = 'Risposta non disponibile: ' + (response.message || 'errore') + '.';
+  });
+}
+
 function createAccessibleInput() {
   if (overlay) { removeOverlay(true); return; }
 
@@ -96,12 +228,21 @@ function createAccessibleInput() {
 
   overlay.innerHTML = `
     <div class="a11y-container">
-      <label id="nav-label" for="a11y-nav-input">Scrivi la destinazione (es. carrello, contatti):</label>
-      <input type="text" id="a11y-nav-input" placeholder="Dove vuoi andare?" autocomplete="off" />
+      <label id="nav-label" for="a11y-nav-input">Scrivi dove vuoi andare o una domanda (es. carrello, contatti, quanto costa):</label>
+      <input type="text" id="a11y-nav-input" placeholder="Dove vuoi andare o cosa vuoi sapere?" autocomplete="off" />
       <div class="a11y-actions">
         <button id="a11y-browse-btn" type="button">Naviga nel sito</button>
+        <button id="a11y-ask-btn" type="button">Chiedi alla pagina</button>
       </div>
-      <p id="a11y-nav-help" class="sr-only">Premi Invio per avviare l'esplorazione; Esc per chiudere. Scorciatoia da tastiera: Ctrl più Shift più Y, su Mac Command più Shift più Y.</p>
+      <div class="a11y-actions a11y-quick" role="group" aria-label="Azioni rapide sulla pagina">
+        <button type="button" data-quick="search">Cerca</button>
+        <button type="button" data-quick="content">Contenuto</button>
+        <button type="button" data-quick="menu">Menu</button>
+        <button type="button" data-quick="contacts">Contatti</button>
+        <button type="button" data-quick="top">Inizio</button>
+        <button type="button" data-quick="bottom">Fine</button>
+      </div>
+      <p id="a11y-nav-help" class="sr-only">Premi Invio per avviare l'esplorazione oppure usa Chiedi alla pagina per una risposta dal contenuto. Esc per chiudere. Azioni rapide: Cerca, Contenuto, Menu, Contatti, Inizio, Fine. Scorciatoia da tastiera: Ctrl più Shift più Y, su Mac Command più Shift più Y.</p>
       <div id="a11y-status" role="status" aria-live="polite" aria-atomic="true"></div>
     </div>
   `;
@@ -119,6 +260,12 @@ function createAccessibleInput() {
   });
   document.getElementById('a11y-browse-btn').addEventListener('click', () => {
     if (input.value.trim() !== '') startMission(input.value, status);
+  });
+  document.getElementById('a11y-ask-btn').addEventListener('click', () => {
+    if (input.value.trim() !== '') askPage(input.value, status);
+  });
+  overlay.querySelectorAll('[data-quick]').forEach((btn) => {
+    btn.addEventListener('click', () => runQuickAction(btn.getAttribute('data-quick'), status));
   });
 }
 
@@ -219,6 +366,54 @@ function normalizeParsedUrl(u) {
   }
 }
 
+let rootsCache = null;
+
+function collectRoots() {
+  const roots = [document];
+  for (let i = 0; i < roots.length; i++) {
+    const all = roots[i].querySelectorAll('*');
+    for (const el of all) if (el.shadowRoot) roots.push(el.shadowRoot);
+  }
+  return roots;
+}
+
+function getRoots() {
+  if (!rootsCache) rootsCache = collectRoots();
+  return rootsCache;
+}
+
+function clearRoots() {
+  rootsCache = null;
+}
+
+function deepClosest(el, selector) {
+  let node = el;
+  while (node) {
+    if (node.closest) {
+      const found = node.closest(selector);
+      if (found) return found;
+    }
+    const root = node.getRootNode ? node.getRootNode() : null;
+    node = root && root.host ? root.host : null;
+  }
+  return null;
+}
+
+const elementRegistry = new Map();
+
+function registerA11yId(el, id) {
+  el.setAttribute('data-a11y-id', id);
+  elementRegistry.set(id, el);
+  return id;
+}
+
+function a11yElementById(id) {
+  const el = elementRegistry.get(id);
+  if (el && el.isConnected) return el;
+  if (el) elementRegistry.delete(id);
+  return document.querySelector('[data-a11y-id="' + id + '"]');
+}
+
 const STATIC_FILE_RE = /\.(pdf|zip|rar|7z|gz|tgz|tar|docx?|xlsx?|pptx?|odt|ods|odp|csv|txt|rtf|png|jpe?g|gif|webp|svg|bmp|ico|mp4|m4v|mp3|wav|avi|mov|mkv|webm|exe|dmg|pkg|apk|iso)$/i;
 
 function normalizePageUrl(url) {
@@ -233,7 +428,7 @@ function normalizePageUrl(url) {
 const ZONE_RE = 'nav, [role="navigation"], header, [role="banner"], footer, [role="contentinfo"], aside, [role="complementary"], main, [role="main"], form[role="search"]';
 
 function zoneOf(el) {
-  const zone = el.closest(ZONE_RE);
+  const zone = deepClosest(el, ZONE_RE);
   if (!zone) return "contenuto";
   const tag = zone.tagName.toLowerCase();
   const role = zone.getAttribute('role') || "";
@@ -256,7 +451,9 @@ function headingList(scope) {
 }
 
 function sectionHeading(el) {
-  const scope = el.closest('section, article, [role="region"], nav, header, footer, aside, main, form') || document.body;
+  const scope = el.closest('section, article, [role="region"], nav, header, footer, aside, main, form')
+    || (el.getRootNode ? el.getRootNode() : null)
+    || document.body;
   if (!scope) return "";
   const headings = headingList(scope);
   let lo = 0, hi = headings.nodes.length - 1, best = -1;
@@ -286,55 +483,58 @@ function collectLinks(query) {
   headingScopeCache = new WeakMap();
   rowTextCache = new WeakMap();
   try {
-    const rawLinks = document.querySelectorAll('a[href]');
     const nodes = [];
     const pageNorm = normalizePageUrl(location.href);
 
-    rawLinks.forEach((el) => {
-      if (isHidden(el)) return;
-      const parsed = cleanParsedUrl(el.getAttribute('href'));
-      if (!parsed) return;
-      const href = parsed.href;
-      if (!parsed.email && !/^https?:\/\//.test(href)) return;
-      const isEmail = parsed.email;
-      if (!isEmail && STATIC_FILE_RE.test(parsed.url.pathname)) return;
-      if (!isEmail && pageNorm && normalizeParsedUrl(parsed.url) === pageNorm) return;
+    for (const root of getRoots()) {
+      root.querySelectorAll('a[href]').forEach((el) => {
+        if (isHidden(el)) return;
+        const parsed = cleanParsedUrl(el.getAttribute('href'));
+        if (!parsed) return;
+        const href = parsed.href;
+        if (!parsed.email && !/^https?:\/\//.test(href)) return;
+        const isEmail = parsed.email;
+        if (!isEmail && STATIC_FILE_RE.test(parsed.url.pathname)) return;
+        if (!isEmail && pageNorm && normalizeParsedUrl(parsed.url) === pageNorm) return;
 
-      let accessibleName = (
-        el.getAttribute('aria-label') ||
-        el.innerText ||
-        el.getAttribute('title') ||
-        extraName(el) ||
-        shareName(el) ||
-        ''
-      ).trim().replace(/\s+/g, ' ');
-      if (!accessibleName) return;
+        let accessibleName = (
+          el.getAttribute('aria-label') ||
+          el.innerText ||
+          el.getAttribute('title') ||
+          extraName(el) ||
+          shareName(el) ||
+          ''
+        ).trim().replace(/\s+/g, ' ');
+        if (!accessibleName) return;
 
-      nodes.push({
-        el: el,
-        t: accessibleName,
-        href: href,
-        email: isEmail,
-        near: rowContext(el, accessibleName),
-        zone: zoneOf(el),
-        heading: sectionHeading(el)
+        nodes.push({
+          el: el,
+          t: accessibleName,
+          href: href,
+          email: isEmail,
+          near: rowContext(el, accessibleName),
+          zone: zoneOf(el),
+          heading: sectionHeading(el)
+        });
       });
-    });
+    }
 
     const ranked = dedupeLinks(rankLinksByQuery(nodes, query));
     let linkCounter = 0;
-    const items = ranked.map((n) => {
-      if (!n.el.getAttribute('data-a11y-id') || !n.el.getAttribute('data-a11y-id').startsWith('l-')) {
-        n.el.setAttribute('data-a11y-id', `l-${linkCounter++}`);
+    const idFor = (el) => {
+      const existing = el.getAttribute('data-a11y-id');
+      if (existing && existing.startsWith('l-')) {
+        elementRegistry.set(existing, el);
+        return existing;
       }
-      return { id: n.el.getAttribute('data-a11y-id'), t: n.t, href: n.href, email: !!n.email, near: n.near, zone: n.zone, heading: n.heading };
-    });
-    const toggles = collectMenuToggles().map((n) => {
-      if (!n.el.getAttribute('data-a11y-id') || !n.el.getAttribute('data-a11y-id').startsWith('l-')) {
-        n.el.setAttribute('data-a11y-id', `l-${linkCounter++}`);
-      }
-      return { id: n.el.getAttribute('data-a11y-id'), t: n.t, href: "", email: false, near: "", zone: "menu", heading: n.heading || "", toggle: true };
-    });
+      return registerA11yId(el, `l-${linkCounter++}`);
+    };
+    const items = ranked.map((n) => ({
+      id: idFor(n.el), t: n.t, href: n.href, email: !!n.email, near: n.near, zone: n.zone, heading: n.heading
+    }));
+    const toggles = collectMenuToggles().map((n) => ({
+      id: idFor(n.el), t: n.t, href: "", email: false, near: "", zone: "menu", heading: n.heading || "", toggle: true
+    }));
     return items.concat(toggles);
   } finally {
     headingScopeCache = null;
@@ -345,26 +545,28 @@ function collectLinks(query) {
 function collectMenuToggles() {
   const out = [];
   const seen = new Set();
-  const candidates = document.querySelectorAll('[aria-haspopup], summary, button[aria-expanded], [role="button"][aria-expanded], nav [aria-expanded], header [aria-expanded], [aria-expanded][aria-controls]');
-  candidates.forEach((el) => {
-    if (seen.has(el)) return;
-    if (isHidden(el)) return;
-    const expanded = el.getAttribute('aria-expanded');
-    const haspopup = el.getAttribute('aria-haspopup');
-    const controls = el.getAttribute('aria-controls');
-    const className = typeof el.className === 'string' ? el.className : (el.className && el.className.baseVal) || '';
-    const name = (el.getAttribute('aria-label') || el.innerText || el.getAttribute('title') || '').trim().replace(/\s+/g, ' ');
-    const inNav = !!el.closest('nav, header, [role="navigation"], [role="banner"]');
-    const looksMenu = /menu|voci|sezioni|navigazione|hamburger/i.test(name) || /hamburger|burger|menu-?toggle|nav-?toggle/i.test(className);
-    const isToggle = haspopup || el.tagName === 'SUMMARY'
-      || (inNav && (looksMenu || expanded === 'false' || !!controls))
-      || (looksMenu && expanded !== null);
-    if (!isToggle) return;
-    if (!name && el.tagName !== 'SUMMARY') return;
-    if (/^\s*(cerca|search)\s*$/i.test(name)) return;
-    seen.add(el);
-    out.push({ el: el, t: name || 'Apri il menu di navigazione', heading: sectionHeading(el), nav: inNav });
-  });
+  const selector = '[aria-haspopup], summary, button[aria-expanded], [role="button"][aria-expanded], nav [aria-expanded], header [aria-expanded], [aria-expanded][aria-controls]';
+  for (const root of getRoots()) {
+    root.querySelectorAll(selector).forEach((el) => {
+      if (seen.has(el)) return;
+      if (isHidden(el)) return;
+      const expanded = el.getAttribute('aria-expanded');
+      const haspopup = el.getAttribute('aria-haspopup');
+      const controls = el.getAttribute('aria-controls');
+      const className = typeof el.className === 'string' ? el.className : (el.className && el.className.baseVal) || '';
+      const name = (el.getAttribute('aria-label') || el.innerText || el.getAttribute('title') || '').trim().replace(/\s+/g, ' ');
+      const inNav = !!deepClosest(el, 'nav, header, [role="navigation"], [role="banner"]');
+      const looksMenu = /menu|voci|sezioni|navigazione|hamburger/i.test(name) || /hamburger|burger|menu-?toggle|nav-?toggle/i.test(className);
+      const isToggle = haspopup || el.tagName === 'SUMMARY'
+        || (inNav && (looksMenu || expanded === 'false' || !!controls))
+        || (looksMenu && expanded !== null);
+      if (!isToggle) return;
+      if (!name && el.tagName !== 'SUMMARY') return;
+      if (/^\s*(cerca|search)\s*$/i.test(name)) return;
+      seen.add(el);
+      out.push({ el: el, t: name || 'Apri il menu di navigazione', heading: sectionHeading(el), nav: inNav });
+    });
+  }
   return out
     .sort((a, b) => (b.nav ? 1 : 0) - (a.nav ? 1 : 0))
     .slice(0, 25)
@@ -400,11 +602,14 @@ function rowContext(el, ownName) {
 
 function mainContentRoot() {
   const candidates = ['main', '[role="main"]', '#main', '#content', '#contenuto', '.site-main', '.entry-content', 'article'];
+  const roots = getRoots();
   for (const sel of candidates) {
-    const el = document.querySelector(sel);
-    if (el) {
-      const text = (el.innerText || "").trim();
-      if (text.length >= 200) return el;
+    for (const root of roots) {
+      const el = root.querySelector(sel);
+      if (el) {
+        const text = (el.innerText || "").trim();
+        if (text.length >= 200) return el;
+      }
     }
   }
   return document.body || document.documentElement;
@@ -444,7 +649,7 @@ function collectPageText() {
   const infoFor = (parent) => {
     if (parentInfo.has(parent)) return parentInfo.get(parent);
     let info = null;
-    if (!["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"].includes(parent.tagName) && !parent.closest(CHROME_SEL)) {
+    if (!["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"].includes(parent.tagName) && !deepClosest(parent, CHROME_SEL)) {
       const rect = parent.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0 && !isHidden(parent)) info = rect;
     }
@@ -476,11 +681,14 @@ function collectDialogs() {
     const clean = (t || "").trim().replace(/\s+/g, " ").slice(0, 400);
     if (clean && !out.includes(clean)) out.push(clean);
   };
-  document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]').forEach((d) => {
-    const rect = d.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) push(d.innerText);
-  });
-  const center = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+  const dialogSel = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
+  for (const root of getRoots()) {
+    root.querySelectorAll(dialogSel).forEach((d) => {
+      const rect = d.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) push(d.innerText);
+    });
+  }
+  const center = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2) : null;
   for (let n = center; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
     const st = window.getComputedStyle(n);
     const r = n.getBoundingClientRect();
@@ -570,17 +778,19 @@ function scrollState() {
 }
 
 function findSiteSearch() {
-  const inputs = document.querySelectorAll('input[type="search"], form[role="search"] input, input[name*="search" i], input[name*="cerca" i], input[placeholder*="cerca" i], input[placeholder*="search" i]');
-  for (const input of inputs) {
-    const type = (input.getAttribute('type') || 'text').toLowerCase();
-    if (!['text', 'search', ''] .includes(type)) continue;
-    const rect = input.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 8) continue;
-    if (isHidden(input)) continue;
-    if (input.disabled || input.readOnly) continue;
-    const form = input.form || input.closest('form');
-    const submit = (form && form.querySelector('button[type="submit"], input[type="submit"], button:not([type])')) || null;
-    return { input: input, submit: submit };
+  const selector = 'input[type="search"], form[role="search"] input, input[name*="search" i], input[name*="cerca" i], input[placeholder*="cerca" i], input[placeholder*="search" i]';
+  for (const root of getRoots()) {
+    for (const input of root.querySelectorAll(selector)) {
+      const type = (input.getAttribute('type') || 'text').toLowerCase();
+      if (!['text', 'search', ''] .includes(type)) continue;
+      const rect = input.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 8) continue;
+      if (isHidden(input)) continue;
+      if (input.disabled || input.readOnly) continue;
+      const form = input.form || input.closest('form');
+      const submit = (form && form.querySelector('button[type="submit"], input[type="submit"], button:not([type])')) || null;
+      return { input: input, submit: submit };
+    }
   }
   return null;
 }
@@ -588,13 +798,10 @@ function findSiteSearch() {
 function siteSearchPayload() {
   const found = findSiteSearch();
   if (!found) return null;
-  if (!found.input.getAttribute('data-a11y-id')) found.input.setAttribute('data-a11y-id', 's-input');
+  const inputId = registerA11yId(found.input, 's-input');
   let submitId = "";
-  if (found.submit) {
-    if (!found.submit.getAttribute('data-a11y-id')) found.submit.setAttribute('data-a11y-id', 's-submit');
-    submitId = found.submit.getAttribute('data-a11y-id');
-  }
-  return { inputId: found.input.getAttribute('data-a11y-id'), submitId: submitId };
+  if (found.submit) submitId = registerA11yId(found.submit, 's-submit');
+  return { inputId: inputId, submitId: submitId };
 }
 
 function pagePayload() {
@@ -612,6 +819,8 @@ function pagePayload() {
 
 function sendBrowseStep() {
   const t0 = perfNow();
+  stepInFlight = true;
+  clearRoots();
   const payload = pagePayload();
   const t1 = perfNow();
   const links = collectLinks();
@@ -642,6 +851,7 @@ function sendBrowseStep() {
 
 function startMission(query, status) {
   const t0 = perfNow();
+  clearRoots();
   const payload = pagePayload();
   const t1 = perfNow();
   const links = collectLinks(query);
@@ -654,6 +864,7 @@ function startMission(query, status) {
   }
   lastObservation = null;
   status.textContent = "Avvio esplorazione...";
+  missionActive = true;
   lastRequestAt = perfNow();
   chrome.runtime.sendMessage({
     action: "browse_start",
@@ -671,6 +882,7 @@ function startMission(query, status) {
 
 function continueMission(mission) {
   showMissionBar(`Passo ${mission.step} · ${mission.original}. Continuo l'esplorazione...`);
+  missionActive = true;
   cancelMissionTimer();
   missionTimer = settle(() => sendBrowseStep(), 900);
 }
@@ -686,6 +898,11 @@ function ensureMissionOverlay() {
   overlay.innerHTML = `
     <div class="a11y-container">
       <div id="a11y-status" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div class="a11y-actions a11y-mission-actions" role="group" aria-label="Controlli dell'esplorazione">
+        <button id="a11y-back-btn" type="button">Indietro</button>
+        <button id="a11y-home-btn" type="button">All'inizio</button>
+        <button id="a11y-retry-btn" type="button">Ripeti</button>
+      </div>
       <button id="a11y-stop-btn" type="button">Interrompi</button>
     </div>
   `;
@@ -695,8 +912,39 @@ function ensureMissionOverlay() {
     stopBtn.addEventListener('click', () => { stopMission(true); removeOverlay(true); });
     stopBtn.focus();
   }
+  const backBtn = document.getElementById('a11y-back-btn');
+  if (backBtn) backBtn.addEventListener('click', () => requestMissionNav('browse_back'));
+  const homeBtn = document.getElementById('a11y-home-btn');
+  if (homeBtn) homeBtn.addEventListener('click', () => requestMissionNav('browse_home'));
+  const retryBtn = document.getElementById('a11y-retry-btn');
+  if (retryBtn) retryBtn.addEventListener('click', () => requestMissionNav('browse_restart'));
   document.addEventListener('keydown', overlayEscHandler);
   return true;
+}
+
+function requestMissionNav(action) {
+  chrome.runtime.sendMessage({ action: action }, (response) => {
+    if (chrome.runtime.lastError || !response) {
+      showMissionBar('Operazione non disponibile.');
+      return;
+    }
+    if (response.status === "goto_back" && response.href) {
+      missionActive = true;
+      showMissionBar(`Torno a ${response.label || "pagina precedente"}...`);
+      setTimeout(() => { location.href = response.href; }, 400);
+      return;
+    }
+    if (response.status === "restart" && response.query) {
+      const status = document.getElementById('a11y-status');
+      startMission(response.query, status);
+      return;
+    }
+    if (response.status === "stopped") {
+      showMissionBar('Nessuna missione attiva.');
+      return;
+    }
+    showMissionBar('Non c\u2019è una pagina precedente.');
+  });
 }
 
 function showMissionBar(message) {
@@ -714,6 +962,8 @@ function showMissionBar(message) {
 }
 
 function stopMission(notify) {
+  missionActive = false;
+  stepInFlight = false;
   cancelMissionTimer();
   try {
     chrome.runtime.sendMessage({ action: "browse_stop" }, () => {});
@@ -724,6 +974,7 @@ function stopMission(notify) {
 }
 
 function handleBrowseResponse(response) {
+  stepInFlight = false;
   if (lastRequestAt !== null) {
     perfLog(`roundtrip=${Math.round(perfNow() - lastRequestAt)}ms`);
     lastRequestAt = null;
@@ -743,16 +994,17 @@ function handleBrowseResponse(response) {
   if (response.status === "goto") {
     const alt = typeof response.alternatives === "number" && response.alternatives > 0 ? ` (${response.alternatives} alternative)` : "";
     const vars = Array.isArray(response.variants) && response.variants.length > 0 ? ` Cerco anche: ${response.variants.join(", ")}.` : "";
-    showMissionBar(`Passo ${response.step} · vado a "${response.label}"${alt}.${vars}`);
+    const shortcutNote = response.shortcut ? " (scorciatoia appresa)" : (response.degraded ? " (modalità ridotta)" : "");
+    showMissionBar(`Passo ${response.step} · vado a "${response.label}"${alt}${shortcutNote}.${vars}`);
     setTimeout(() => {
-      const target = document.querySelector(`[data-a11y-id="${response.linkId}"]`);
+      const target = a11yElementById(response.linkId);
       if (target) target.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
       if (response.href && !/^mailto:/i.test(response.href)) {
         console.info("[a11y-nav] navigo direttamente a", response.href);
         location.href = response.href;
         return;
       }
-      const fresh = document.querySelector(`[data-a11y-id="${response.linkId}"]`);
+      const fresh = a11yElementById(response.linkId);
       const freshMail = fresh && /^mailto:/i.test(fresh.getAttribute('href') || '');
       if (fresh && fresh.click && !freshMail) {
         try {
@@ -767,7 +1019,7 @@ function handleBrowseResponse(response) {
     return;
   }
   if (response.status === "scroll_down" || response.status === "scroll_up") {
-    showMissionBar(`Passo ${response.step} · scorro la pagina...`);
+    showMissionBar(`Passo ${response.step} · scorro la pagina${response.degraded ? " (modalità ridotta)" : ""}...`);
     window.scrollBy({ top: response.status === "scroll_down" ? 560 : -560, behavior: scrollBehavior() });
     missionTimer = settle(() => sendBrowseStep(), 900);
     return;
@@ -780,7 +1032,7 @@ function handleBrowseResponse(response) {
   if (response.status === "search_site") {
     showMissionBar(`Passo ${response.step} · uso la ricerca del sito...`);
     setTimeout(() => {
-      const input = document.querySelector(`[data-a11y-id="${response.inputId}"]`);
+      const input = a11yElementById(response.inputId);
       if (!input) {
         console.warn("[a11y-nav] campo di ricerca non trovato, continuo con i link.");
         sendBrowseStep();
@@ -790,7 +1042,7 @@ function handleBrowseResponse(response) {
       input.value = response.text || "";
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      const submit = response.submitId ? document.querySelector(`[data-a11y-id="${response.submitId}"]`) : null;
+      const submit = response.submitId ? a11yElementById(response.submitId) : null;
       if (submit && submit.click) {
         submit.click();
       } else if (input.form && input.form.requestSubmit) {
@@ -806,7 +1058,7 @@ function handleBrowseResponse(response) {
     stopMission(false);
     showMissionBar(`Apro il programma email per "${response.label}"...`);
     setTimeout(() => {
-      const target = document.querySelector(`[data-a11y-id="${response.linkId}"]`);
+      const target = a11yElementById(response.linkId);
       if (target && target.click) target.click();
       else if (response.href) location.href = response.href;
       setTimeout(() => removeOverlay(), 2500);
@@ -835,6 +1087,8 @@ function handleBrowseResponse(response) {
     no_choice: "Nessun passo avanti trovato. Missione interrotta.",
     blocked: "Bloccato: nessuna operazione utile. Missione interrotta.",
     site_error: "La pagina mostra un errore. Missione interrotta.",
+    excluded: "Sito escluso nelle opzioni. Missione interrotta.",
+    max_steps: "Raggiunto il numero massimo di passi. Missione interrotta.",
     loop: response.hint ? `Giro vizioso su "${response.hint}". Missione interrotta.` : "Giro vizioso. Missione interrotta.",
     error: response.hint ? `Errore del servizio (${response.hint}). Missione interrotta.` : "Errore del servizio. Missione interrotta."
   };
@@ -874,6 +1128,8 @@ function rankLinksByQuery(nodes, query) {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.action === "open_input") createAccessibleInput();
 });
+
+installRouteObserver();
 
 (async () => {
   try {

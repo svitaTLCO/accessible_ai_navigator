@@ -64,7 +64,9 @@ label {
 }
 
 input[type="text"],
-input[type="password"] {
+input[type="password"],
+input[type="number"],
+textarea {
   width: 100%;
   box-sizing: border-box;
   padding: 12px;
@@ -99,9 +101,15 @@ button:hover {
 }
 
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+textarea:focus-visible {
   outline: 3px solid #FFFFFF;
   outline-offset: 2px;
+}
+
+textarea {
+  resize: vertical;
+  font-family: inherit;
 }
 
 ::placeholder {

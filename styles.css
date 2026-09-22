@@ -43,6 +43,21 @@
   cursor: pointer;
 }
 
+.a11y-actions.a11y-quick {
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.a11y-actions.a11y-mission-actions {
+  margin-top: 12px;
+}
+
+.a11y-actions.a11y-quick button {
+  flex: 1 1 calc(33% - 10px);
+  padding: 8px;
+  font-size: 14px;
+}
+
 #a11y-stop-btn {
   margin-top: 12px;
   width: 100%;

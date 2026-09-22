@@ -1,4 +1,5 @@
 const STORAGE_KEY = "llmProviderConfig";
+const SETTINGS_KEY = "a11ySettings";
 
 const statusEl = document.getElementById("status");
 
@@ -25,6 +26,21 @@ function fillForm(cfg) {
   document.getElementById("custom-url").value = cfg.baseUrl || "";
   document.getElementById("custom-key").value = cfg.apiKey || "";
   document.getElementById("custom-model").value = cfg.model || "";
+}
+
+function fillSettings(settings) {
+  document.getElementById("max-steps").value = settings.maxSteps ? String(settings.maxSteps) : "";
+  document.getElementById("excluded-sites").value = Array.isArray(settings.excludedSites) ? settings.excludedSites.join("\n") : "";
+}
+
+function readSettings() {
+  const rawSteps = Number(document.getElementById("max-steps").value);
+  const maxSteps = Number.isFinite(rawSteps) && rawSteps > 0 ? Math.floor(rawSteps) : 0;
+  const excludedSites = document.getElementById("excluded-sites").value
+    .split("\n")
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean);
+  return { maxSteps: maxSteps, excludedSites: excludedSites };
 }
 
 function readForm() {
@@ -225,7 +241,7 @@ async function saveOptions() {
     return;
   }
   try {
-    await store.set({ [STORAGE_KEY]: cfg });
+    await store.set({ [STORAGE_KEY]: cfg, [SETTINGS_KEY]: readSettings() });
     let note = "";
     if (refinerConfigured) {
       note = await ensureHostPermission(cfg.baseUrl);
@@ -244,12 +260,28 @@ async function resetOptions() {
     return;
   }
   try {
-    await store.remove(STORAGE_KEY);
+    await store.remove([STORAGE_KEY, SETTINGS_KEY]);
     fillForm({});
+    fillSettings({});
     setStatus("Valori predefiniti ripristinati.");
   } catch (error) {
     console.error("Errore durante il ripristino dei valori predefiniti:", error);
     setStatus("Errore durante il ripristino: " + error.message, true);
+  }
+}
+
+async function clearShortcuts() {
+  const store = localStore();
+  if (!store) {
+    failOutsideExtension();
+    return;
+  }
+  try {
+    await store.remove("a11yShortcuts");
+    setStatus("Scorciatoie apprese cancellate.");
+  } catch (error) {
+    console.error("Errore durante la cancellazione delle scorciatoie:", error);
+    setStatus("Errore durante la cancellazione: " + error.message, true);
   }
 }
 
@@ -258,6 +290,7 @@ document.getElementById("test-llm-btn").addEventListener("click", testRefiner);
 document.getElementById("detect-llm-btn").addEventListener("click", detectModels);
 document.getElementById("save-btn").addEventListener("click", saveOptions);
 document.getElementById("reset-btn").addEventListener("click", resetOptions);
+document.getElementById("clear-shortcuts-btn").addEventListener("click", clearShortcuts);
 
 (async () => {
   const store = localStore();
@@ -266,8 +299,9 @@ document.getElementById("reset-btn").addEventListener("click", resetOptions);
     return;
   }
   try {
-    const stored = await store.get(STORAGE_KEY);
+    const stored = await store.get([STORAGE_KEY, SETTINGS_KEY]);
     fillForm(stored[STORAGE_KEY] || {});
+    fillSettings(stored[SETTINGS_KEY] || {});
   } catch (error) {
     console.error("Errore durante il caricamento delle opzioni:", error);
     setStatus("Errore durante il caricamento delle opzioni.", true);
