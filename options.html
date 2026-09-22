@@ -18,14 +18,15 @@
     </section>
 
     <section id="section-refiner">
-      <h2>Raffinamento della frase (facoltativo, compatibile OpenAI) <button id="test-llm-btn" type="button">Prova</button></h2>
-      <p class="hint">Se compilato, riformula la frase digitata in una parola chiave prima della selezione. Se il browser mette a disposizione il modello locale, quello ha priorità e questo servizio non viene chiamato.</p>
+      <h2>Raffinamento della frase (facoltativo, compatibile OpenAI) <button id="test-llm-btn" type="button">Prova</button> <button id="detect-llm-btn" type="button">Rileva modelli</button></h2>
+      <p class="hint">Se compilato, riformula la frase digitata in una parola chiave prima della selezione. Il modello è facoltativo: se lo lasci vuoto, l'estensione chiede all'endpoint quali modelli offre e usa il primo disponibile. Se il browser mette a disposizione il modello locale, quello ha priorità e questo servizio non viene chiamato.</p>
       <label for="custom-url">URL di base</label>
       <input type="text" id="custom-url" placeholder="https://api.example.com/v1">
       <label for="custom-key">Chiave API</label>
       <input type="password" id="custom-key" autocomplete="off" placeholder="Inserisci la chiave">
-      <label for="custom-model">Modello</label>
-      <input type="text" id="custom-model" placeholder="es. gpt-4o-mini">
+      <label for="custom-model">Modello (facoltativo)</label>
+      <input type="text" id="custom-model" list="custom-model-list" placeholder="Vuoto per rilevamento automatico, es. auto">
+      <datalist id="custom-model-list"></datalist>
     </section>
 
     <div class="actions">

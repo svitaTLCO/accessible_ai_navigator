@@ -23,6 +23,46 @@
   font-weight: bold;
 }
 
+.a11y-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.a11y-actions button,
+#a11y-mission button {
+  flex: 1;
+  padding: 10px;
+  font-size: 16px;
+  font-weight: bold;
+  background-color: #FFFF00;
+  color: #000000;
+  border: 2px solid #000000;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#a11y-mission {
+  font-size: 16px;
+  font-weight: bold;
+  color: #FFFFFF;
+  background-color: #000000;
+}
+
+#a11y-mission button {
+  margin-top: 12px;
+  width: 100%;
+}
+
+#a11y-status {
+  margin-top: 12px;
+  font-size: 16px;
+  font-weight: bold;
+  color: #FFFFFF;
+  background-color: #000000;
+  min-height: 1.2em;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Logs / temp
+*.log
+*.tmp
+.tmp/
+
+# Env / secrets — never commit keys
+.env
+.env.*
+*.key
+
+# Node (the benchmark is dependency-free, but be safe)
+node_modules/
+
+# Benchmark output
+bench/results/
